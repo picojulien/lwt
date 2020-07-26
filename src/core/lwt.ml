@@ -446,6 +446,7 @@ struct
     mutable cancel_callbacks  : 'a cancel_callback_list;
     mutable how_to_cancel     : how_to_cancel;
     mutable cleanups_deferred : int;
+    mutable user_code         : Owee_location.t;
   }
 
   and 'a regular_callback = 'a resolved_state -> unit
@@ -461,13 +462,15 @@ struct
     | Propagate_cancel_to_several : (_, _, _) promise list -> how_to_cancel
 
   and 'a regular_callback_list =
-    | Regular_callback_list_empty
-    | Regular_callback_list_concat of
-      'a regular_callback_list * 'a regular_callback_list
-    | Regular_callback_list_implicitly_removed_callback of
-      'a regular_callback
-    | Regular_callback_list_explicitly_removable_callback of
-      'a regular_callback option ref
+    | Regular_callback_list_empty : 'a regular_callback_list
+    | Regular_callback_list_concat :
+      'a regular_callback_list * 'a regular_callback_list ->
+      'a regular_callback_list
+    | Regular_callback_list_implicitly_removed_callback :
+       (_, _, _) promise option * 'a regular_callback -> 'a regular_callback_list
+    | Regular_callback_list_explicitly_removable_callback :
+      ((_, _, _) promise * 'a regular_callback) option ref ->
+      'a regular_callback_list
 
   and _ cancel_callback_list =
     | Cancel_callback_list_empty :
@@ -830,11 +833,11 @@ module Pending_callbacks :
 sig
   (* Mutating callback lists attached to pending promises *)
   val add_implicitly_removed_callback :
-    'a callbacks -> 'a regular_callback -> unit
+    'a callbacks -> 'b t option -> 'a regular_callback -> unit
   val add_explicitly_removable_callback_to_each_of :
-    'a t list -> 'a regular_callback -> unit
+    'a t list -> 'b t -> 'a regular_callback -> unit
   val add_explicitly_removable_callback_and_give_remove_function :
-    'a t list -> 'a regular_callback -> (unit -> unit)
+    'a t list -> 'b t -> 'a regular_callback -> (unit -> unit)
   val add_cancel_callback : 'a callbacks -> (unit -> unit) -> unit
   val merge_callbacks : from:'a callbacks -> into:'a callbacks -> unit
 end =
@@ -968,9 +971,16 @@ struct
       | Regular_callback_list_concat _ as existing ->
         Regular_callback_list_concat (node, existing)
 
-  let add_implicitly_removed_callback callbacks f =
-    add_regular_callback_list_node
-      callbacks (Regular_callback_list_implicitly_removed_callback f)
+  let add_implicitly_removed_callback callbacks p_opt f =
+    match p_opt with
+    | None ->
+       add_regular_callback_list_node
+         callbacks (Regular_callback_list_implicitly_removed_callback (None, f))
+    | Some p ->
+       (match to_internal_promise p with
+        | Internal ip ->
+           add_regular_callback_list_node
+             callbacks (Regular_callback_list_implicitly_removed_callback (Some ip, f)))
 
   (* Adds [callback] as removable to each promise in [ps]. The first promise in
      [ps] to trigger [callback] removes [callback] from the other promises; this
@@ -979,16 +989,15 @@ struct
 
      This is an internal function, indirectly used by the implementations of
      [Lwt.choose] and related functions. *)
-  let add_explicitly_removable_callback_and_give_cell ps f =
-    let rec cell = ref (Some self_removing_callback_wrapper)
+  let add_explicitly_removable_callback_and_give_cell ps succ f =
+    let rec cell = ref (Some (succ, self_removing_callback_wrapper))
     and self_removing_callback_wrapper result =
       clear_explicitly_removable_callback_cell cell ~originally_added_to:ps;
       f result
     in
-
-    let node = Regular_callback_list_explicitly_removable_callback cell in
     ps |> List.iter (fun p ->
       let Internal p = to_internal_promise p in
+      let node = Regular_callback_list_explicitly_removable_callback cell in
       match (underlying p).state with
       | Pending callbacks -> add_regular_callback_list_node callbacks node
       | Fulfilled _ -> assert false
@@ -996,15 +1005,19 @@ struct
 
     cell
 
-  let add_explicitly_removable_callback_to_each_of ps f =
-    ignore (add_explicitly_removable_callback_and_give_cell ps f)
+  let add_explicitly_removable_callback_to_each_of ps succ f =
+    match to_internal_promise succ with
+    | Internal succ ->
+      ignore (add_explicitly_removable_callback_and_give_cell ps succ f)
 
   (* This is basically just to support [Lwt.protected], which needs to remove
      the callback in circumstances other than the callback being called. *)
-  let add_explicitly_removable_callback_and_give_remove_function ps f =
-    let cell = add_explicitly_removable_callback_and_give_cell ps f in
-    fun () ->
-      clear_explicitly_removable_callback_cell cell ~originally_added_to:ps
+  let add_explicitly_removable_callback_and_give_remove_function ps succ f =
+    match to_internal_promise succ with
+    | Internal succ ->
+       let cell = add_explicitly_removable_callback_and_give_cell ps succ f in
+       fun () ->
+         clear_explicitly_removable_callback_cell cell ~originally_added_to:ps
 
   let add_cancel_callback callbacks f =
     (* Ugly cast :( *)
@@ -1050,6 +1063,7 @@ sig
 
   val run_callback_or_defer_it :
     ?run_immediately_and_ensure_tail_call:bool ->
+    user_code:(unit -> Owee_location.t) ->
     callback:(unit -> 'a) ->
     if_deferred:(unit -> 'a * 'b regular_callback * 'b resolved_state) ->
       'a
@@ -1210,14 +1224,14 @@ struct
         match fs with
         | Regular_callback_list_empty ->
           iter_list rest
-        | Regular_callback_list_implicitly_removed_callback f ->
+        | Regular_callback_list_implicitly_removed_callback (_, f) ->
           f result;
           iter_list rest
         | Regular_callback_list_explicitly_removable_callback
-            {contents = None} ->
+           {contents = None} ->
           iter_list rest
         | Regular_callback_list_explicitly_removable_callback
-            {contents = Some f} ->
+           {contents = Some (_, f)} ->
           f result;
           iter_list rest
         | Regular_callback_list_concat (fs, fs') ->
@@ -1320,6 +1334,7 @@ struct
 
   let run_callback_or_defer_it
       ?(run_immediately_and_ensure_tail_call = false)
+      ~user_code
       ~callback:f
       ~if_deferred =
 
@@ -1339,10 +1354,11 @@ struct
           {
             regular_callbacks =
               Regular_callback_list_implicitly_removed_callback
-                deferred_callback;
+                (None, deferred_callback);
             cancel_callbacks = Cancel_callback_list_empty;
             how_to_cancel = Not_cancelable;
-            cleanups_deferred = 0
+            cleanups_deferred = 0;
+            user_code = user_code ()
           }
         in
         Queue.push
@@ -1536,7 +1552,10 @@ module Pending_promises :
 sig
   (* Internal *)
   val new_pending :
-    how_to_cancel:how_to_cancel -> ('a, underlying, pending) promise
+    ?user_code:Owee_location.t ->
+    how_to_cancel:how_to_cancel ->
+    unit ->
+    ('a, underlying, pending) promise
   val propagate_cancel_to_several : _ t list -> how_to_cancel
 
   (* Initial pending promises (public) *)
@@ -1552,13 +1571,14 @@ sig
   val no_cancel : 'a t -> 'a t
 end =
 struct
-  let new_pending ~how_to_cancel =
+  let new_pending ?(user_code = Owee_location.none) ~how_to_cancel () =
     let state =
       Pending {
         regular_callbacks = Regular_callback_list_empty;
         cancel_callbacks = Cancel_callback_list_empty;
         how_to_cancel;
         cleanups_deferred = 0;
+        user_code
       }
     in
     {state}
@@ -1574,11 +1594,11 @@ struct
 
 
   let wait () =
-    let p = new_pending ~how_to_cancel:Not_cancelable in
+    let p = new_pending ~how_to_cancel:Not_cancelable () in
     to_public_promise p, to_public_resolver p
 
   let task () =
-    let p = new_pending ~how_to_cancel:Cancel_this_promise in
+    let p = new_pending ~how_to_cancel:Cancel_this_promise () in
     to_public_promise p, to_public_resolver p
 
 
@@ -1597,7 +1617,7 @@ struct
     Obj.magic node
 
   let add_task_r sequence =
-    let p = new_pending ~how_to_cancel:Cancel_this_promise in
+    let p = new_pending ~how_to_cancel:Cancel_this_promise () in
     let node = Lwt_sequence.add_r (to_public_resolver p) sequence in
     let node = cast_sequence_node node p in
 
@@ -1608,7 +1628,7 @@ struct
     to_public_promise p
 
   let add_task_l sequence =
-    let p = new_pending ~how_to_cancel:Cancel_this_promise in
+    let p = new_pending ~how_to_cancel:Cancel_this_promise () in
     let node = Lwt_sequence.add_l (to_public_resolver p) sequence in
     let node = cast_sequence_node node p in
 
@@ -1627,7 +1647,7 @@ struct
     | Rejected _ -> p
 
     | Pending _ ->
-      let p' = new_pending ~how_to_cancel:Cancel_this_promise in
+      let p' = new_pending ~how_to_cancel:Cancel_this_promise () in
 
       let callback p_result =
         let State_may_now_be_pending_proxy p' = may_now_be_proxy p' in
@@ -1651,15 +1671,17 @@ struct
         ignore p'
       in
 
+      let public_p' = to_public_promise p' in
+
       let remove_the_callback =
         add_explicitly_removable_callback_and_give_remove_function
-          [p] callback
+          [p] public_p' callback
       in
 
       let Pending p'_callbacks = p'.state in
       add_cancel_callback p'_callbacks remove_the_callback;
 
-      to_public_promise p'
+      public_p'
 
   let no_cancel p =
     let Internal p_internal = to_internal_promise p in
@@ -1668,7 +1690,7 @@ struct
     | Rejected _ -> p
 
     | Pending p_callbacks ->
-      let p' = new_pending ~how_to_cancel:Not_cancelable in
+      let p' = new_pending ~how_to_cancel:Not_cancelable () in
 
       let callback p_result =
         let State_may_now_be_pending_proxy p' = may_now_be_proxy p' in
@@ -1682,9 +1704,10 @@ struct
           resolve ~allow_deferring:false p' p_result in
         ignore p'
       in
-      add_implicitly_removed_callback p_callbacks callback;
+      let public_promise = to_public_promise p' in
+      add_implicitly_removed_callback p_callbacks (Some public_promise) callback;
 
-      to_public_promise p'
+      public_promise
 end
 include Pending_promises
 
@@ -1846,7 +1869,12 @@ struct
 
       Functions other than [Lwt.bind] have analogous deferral behavior. *)
     let create_result_promise_and_callback_if_deferred () =
-      let p'' = new_pending ~how_to_cancel:(Propagate_cancel_to_one p) in
+      let p'' =
+        new_pending
+          ~user_code:(Owee_location.extract f)
+          ~how_to_cancel:(Propagate_cancel_to_one p)
+          ()
+      in
       (* The result promise is a fresh pending promise.
 
          Initially, trying to cancel this fresh pending promise [p''] will
@@ -1899,6 +1927,7 @@ struct
     | Fulfilled v ->
       run_callback_or_defer_it
         ~run_immediately_and_ensure_tail_call:true
+        ~user_code:(fun () -> Owee_location.extract f)
         ~callback:(fun () -> f v)
         ~if_deferred:(fun () ->
           let (p'', callback) =
@@ -1910,7 +1939,7 @@ struct
 
     | Pending p_callbacks ->
       let (p'', callback) = create_result_promise_and_callback_if_deferred () in
-      add_implicitly_removed_callback p_callbacks callback;
+      add_implicitly_removed_callback p_callbacks (Some p'') callback;
       p''
 
   let backtrace_bind add_loc p f =
@@ -1918,7 +1947,12 @@ struct
     let p = underlying p in
 
     let create_result_promise_and_callback_if_deferred () =
-      let p'' = new_pending ~how_to_cancel:(Propagate_cancel_to_one p) in
+      let p'' =
+        new_pending
+          ~user_code:(Owee_location.extract f)
+          ~how_to_cancel:(Propagate_cancel_to_one p)
+          ()
+      in
 
       let saved_storage = !current_storage in
 
@@ -1953,6 +1987,7 @@ struct
     | Fulfilled v ->
       run_callback_or_defer_it
         ~run_immediately_and_ensure_tail_call:true
+        ~user_code:(fun () -> Owee_location.extract f)
         ~callback:(fun () -> f v)
         ~if_deferred:(fun () ->
           let (p'', callback) =
@@ -1964,7 +1999,7 @@ struct
 
     | Pending p_callbacks ->
       let (p'', callback) = create_result_promise_and_callback_if_deferred () in
-      add_implicitly_removed_callback p_callbacks callback;
+      add_implicitly_removed_callback p_callbacks (Some p'') callback;
       p''
 
   let map f p =
@@ -1972,7 +2007,12 @@ struct
     let p = underlying p in
 
     let create_result_promise_and_callback_if_deferred () =
-      let p'' = new_pending ~how_to_cancel:(Propagate_cancel_to_one p) in
+      let p'' =
+        new_pending
+          ~user_code:(Owee_location.extract f)
+          ~how_to_cancel:(Propagate_cancel_to_one p)
+          ()
+      in
 
       let saved_storage = !current_storage in
 
@@ -2006,6 +2046,7 @@ struct
     | Fulfilled v ->
       run_callback_or_defer_it
         ~run_immediately_and_ensure_tail_call:true
+        ~user_code:(fun () -> Owee_location.extract f)
         ~callback:(fun () ->
           to_public_promise
             {state = try Fulfilled (f v) with exn -> Rejected exn})
@@ -2019,7 +2060,7 @@ struct
 
     | Pending p_callbacks ->
       let (p'', callback) = create_result_promise_and_callback_if_deferred () in
-      add_implicitly_removed_callback p_callbacks callback;
+      add_implicitly_removed_callback p_callbacks (Some p'') callback;
       p''
 
   let catch f h =
@@ -2028,7 +2069,12 @@ struct
     let p = underlying p in
 
     let create_result_promise_and_callback_if_deferred () =
-      let p'' = new_pending ~how_to_cancel:(Propagate_cancel_to_one p) in
+      let p'' =
+        new_pending
+          ~user_code:(Owee_location.extract f)
+          ~how_to_cancel:(Propagate_cancel_to_one p)
+          ()
+      in
 
       let saved_storage = !current_storage in
 
@@ -2066,6 +2112,7 @@ struct
     | Rejected exn ->
       run_callback_or_defer_it
         ~run_immediately_and_ensure_tail_call:true
+        ~user_code:(fun () -> Owee_location.extract h)
         ~callback:(fun () -> h exn)
         ~if_deferred:(fun () ->
           let (p'', callback) =
@@ -2074,7 +2121,7 @@ struct
 
     | Pending p_callbacks ->
       let (p'', callback) = create_result_promise_and_callback_if_deferred () in
-      add_implicitly_removed_callback p_callbacks callback;
+      add_implicitly_removed_callback p_callbacks (Some p'') callback;
       p''
 
   let backtrace_catch add_loc f h =
@@ -2083,7 +2130,12 @@ struct
     let p = underlying p in
 
     let create_result_promise_and_callback_if_deferred () =
-      let p'' = new_pending ~how_to_cancel:(Propagate_cancel_to_one p) in
+      let p'' =
+        new_pending
+          ~user_code:(Owee_location.extract f)
+          ~how_to_cancel:(Propagate_cancel_to_one p)
+          ()
+      in
 
       let saved_storage = !current_storage in
 
@@ -2121,6 +2173,7 @@ struct
     | Rejected exn ->
       run_callback_or_defer_it
         ~run_immediately_and_ensure_tail_call:true
+        ~user_code:(fun () -> Owee_location.extract h)
         ~callback:(fun () -> h (add_loc exn))
         ~if_deferred:(fun () ->
           let (p'', callback) =
@@ -2129,7 +2182,7 @@ struct
 
     | Pending p_callbacks ->
       let (p'', callback) = create_result_promise_and_callback_if_deferred () in
-      add_implicitly_removed_callback p_callbacks callback;
+      add_implicitly_removed_callback p_callbacks (Some p'') callback;
       p''
 
   let try_bind f f' h =
@@ -2138,7 +2191,12 @@ struct
     let p = underlying p in
 
     let create_result_promise_and_callback_if_deferred () =
-      let p'' = new_pending ~how_to_cancel:(Propagate_cancel_to_one p) in
+      let p'' =
+        new_pending
+          ~user_code:(Owee_location.extract f)
+          ~how_to_cancel:(Propagate_cancel_to_one p)
+          ()
+      in
 
       let saved_storage = !current_storage in
 
@@ -2178,6 +2236,7 @@ struct
     | Fulfilled v ->
       run_callback_or_defer_it
         ~run_immediately_and_ensure_tail_call:true
+        ~user_code:(fun () -> Owee_location.extract f')
         ~callback:(fun () -> f' v)
         ~if_deferred:(fun () ->
           let (p'', callback) =
@@ -2187,6 +2246,7 @@ struct
     | Rejected exn ->
       run_callback_or_defer_it
         ~run_immediately_and_ensure_tail_call:true
+        ~user_code:(fun () -> Owee_location.extract h)
         ~callback:(fun () -> h exn)
         ~if_deferred:(fun () ->
           let (p'', callback) =
@@ -2195,7 +2255,7 @@ struct
 
     | Pending p_callbacks ->
       let (p'', callback) = create_result_promise_and_callback_if_deferred () in
-      add_implicitly_removed_callback p_callbacks callback;
+      add_implicitly_removed_callback p_callbacks (Some p'') callback;
       p''
 
   let backtrace_try_bind add_loc f f' h =
@@ -2204,7 +2264,12 @@ struct
     let p = underlying p in
 
     let create_result_promise_and_callback_if_deferred () =
-      let p'' = new_pending ~how_to_cancel:(Propagate_cancel_to_one p) in
+      let p'' =
+        new_pending
+          ~user_code:(Owee_location.extract f)
+          ~how_to_cancel:(Propagate_cancel_to_one p)
+          ()
+      in
 
       let saved_storage = !current_storage in
 
@@ -2244,6 +2309,7 @@ struct
     | Fulfilled v ->
       run_callback_or_defer_it
         ~run_immediately_and_ensure_tail_call:true
+        ~user_code:(fun () -> Owee_location.extract f')
         ~callback:(fun () -> f' v)
         ~if_deferred:(fun () ->
           let (p'', callback) =
@@ -2253,6 +2319,7 @@ struct
     | Rejected exn ->
       run_callback_or_defer_it
         ~run_immediately_and_ensure_tail_call:true
+        ~user_code:(fun () -> Owee_location.extract h)
         ~callback:(fun () -> h (add_loc exn))
         ~if_deferred:(fun () ->
           let (p'', callback) =
@@ -2261,7 +2328,7 @@ struct
 
     | Pending p_callbacks ->
       let (p'', callback) = create_result_promise_and_callback_if_deferred () in
-      add_implicitly_removed_callback p_callbacks callback;
+      add_implicitly_removed_callback p_callbacks (Some p'') callback;
       p''
 
   let finalize f f' =
@@ -2284,6 +2351,7 @@ struct
     | Rejected Canceled ->
       run_callback_or_defer_it
         ~run_immediately_and_ensure_tail_call:true
+        ~user_code:(fun () -> Owee_location.extract f)
         ~callback:(fun () -> handle_with_async_exception_hook f ())
         ~if_deferred:(fun () ->
           ((), (fun _ -> handle_with_async_exception_hook f ()), Fulfilled ()))
@@ -2299,7 +2367,7 @@ struct
 
 
 
-  let on_success p f =
+   let on_success p f =
     let Internal p = to_internal_promise p in
     let p = underlying p in
 
@@ -2320,6 +2388,7 @@ struct
     | Fulfilled v ->
       run_callback_or_defer_it
         ~run_immediately_and_ensure_tail_call:true
+        ~user_code:(fun () -> Owee_location.extract f)
         ~callback:(fun () -> handle_with_async_exception_hook f v)
         ~if_deferred:(fun () ->
           let callback = callback_if_deferred () in
@@ -2330,7 +2399,7 @@ struct
 
     | Pending p_callbacks ->
       let callback = callback_if_deferred () in
-      add_implicitly_removed_callback p_callbacks callback
+      add_implicitly_removed_callback p_callbacks None callback
 
   let on_failure p f =
     let Internal p = to_internal_promise p in
@@ -2356,6 +2425,7 @@ struct
     | Rejected exn ->
       run_callback_or_defer_it
         ~run_immediately_and_ensure_tail_call:true
+        ~user_code:(fun () -> Owee_location.extract f)
         ~callback:(fun () -> handle_with_async_exception_hook f exn)
         ~if_deferred:(fun () ->
           let callback = callback_if_deferred () in
@@ -2363,7 +2433,7 @@ struct
 
     | Pending p_callbacks ->
       let callback = callback_if_deferred () in
-      add_implicitly_removed_callback p_callbacks callback
+      add_implicitly_removed_callback p_callbacks None callback
 
   let on_termination p f =
     let Internal p = to_internal_promise p in
@@ -2381,6 +2451,7 @@ struct
     | Fulfilled _ ->
       run_callback_or_defer_it
         ~run_immediately_and_ensure_tail_call:true
+        ~user_code:(fun () -> Owee_location.extract f)
         ~callback:(fun () -> handle_with_async_exception_hook f ())
         ~if_deferred:(fun () ->
           let callback = callback_if_deferred () in
@@ -2389,6 +2460,7 @@ struct
     | Rejected _ ->
       run_callback_or_defer_it
       ~run_immediately_and_ensure_tail_call:true
+        ~user_code:(fun () -> Owee_location.extract f)
         ~callback:(fun () -> handle_with_async_exception_hook f ())
         ~if_deferred:(fun () ->
           let callback = callback_if_deferred () in
@@ -2396,7 +2468,7 @@ struct
 
     | Pending p_callbacks ->
       let callback = callback_if_deferred () in
-      add_implicitly_removed_callback p_callbacks callback
+      add_implicitly_removed_callback p_callbacks None callback
 
   let on_any p f g =
     let Internal p = to_internal_promise p in
@@ -2420,6 +2492,7 @@ struct
     | Fulfilled v ->
       run_callback_or_defer_it
         ~run_immediately_and_ensure_tail_call:true
+        ~user_code:(fun () -> Owee_location.extract f)
         ~callback:(fun () -> handle_with_async_exception_hook f v)
         ~if_deferred:(fun () ->
           let callback = callback_if_deferred () in
@@ -2428,6 +2501,7 @@ struct
     | Rejected exn ->
       run_callback_or_defer_it
         ~run_immediately_and_ensure_tail_call:true
+        ~user_code:(fun () -> Owee_location.extract g)
         ~callback:(fun () -> handle_with_async_exception_hook g exn)
         ~if_deferred:(fun () ->
           let callback = callback_if_deferred () in
@@ -2435,7 +2509,7 @@ struct
 
     | Pending p_callbacks ->
       let callback = callback_if_deferred () in
-      add_implicitly_removed_callback p_callbacks callback
+      add_implicitly_removed_callback p_callbacks None callback
 end
 include Sequential_composition
 
@@ -2479,7 +2553,7 @@ struct
         | Rejected exn ->
           !async_exception_hook exn
       in
-      add_implicitly_removed_callback p_callbacks callback
+      add_implicitly_removed_callback p_callbacks None callback
 
   let ignore_result p =
     let Internal p = to_internal_promise p in
@@ -2498,12 +2572,13 @@ struct
         | Rejected exn ->
           !async_exception_hook exn
       in
-      add_implicitly_removed_callback p_callbacks callback
+      add_implicitly_removed_callback p_callbacks None callback
 
 
+  let join_owee_info = ref None
 
   let join ps =
-    let p' = new_pending ~how_to_cancel:(propagate_cancel_to_several ps) in
+    let p' = new_pending ?user_code:!join_owee_info ~how_to_cancel:(propagate_cancel_to_several ps) () in
 
     let number_pending_in_ps = ref 0 in
     let join_result = ref (Fulfilled ()) in
@@ -2551,7 +2626,7 @@ struct
         match (underlying p).state with
         | Pending p_callbacks ->
           number_pending_in_ps := !number_pending_in_ps + 1;
-          add_implicitly_removed_callback p_callbacks callback;
+          add_implicitly_removed_callback p_callbacks (Some (to_public_promise p')) callback;
           attach_callback_or_resolve_immediately ps
 
         | Rejected _ as p_result ->
@@ -2570,6 +2645,9 @@ struct
     in
 
     attach_callback_or_resolve_immediately ps
+
+  let () =
+    join_owee_info := Some (Owee_location.extract join)
 
   let both p1 p2 =
     let v1 = ref None in
@@ -2665,7 +2743,9 @@ struct
         "Lwt.choose [] would return a promise that is pending forever";
     match count_resolved_promises_in ps with
     | 0 ->
-      let p = new_pending ~how_to_cancel:(propagate_cancel_to_several ps) in
+      let p = new_pending ~how_to_cancel:(propagate_cancel_to_several ps) () in
+
+      let public_p = to_public_promise p in
 
       let callback result =
         let State_may_now_be_pending_proxy p = may_now_be_proxy p in
@@ -2674,9 +2754,9 @@ struct
           resolve ~allow_deferring:false p result in
         ignore p
       in
-      add_explicitly_removable_callback_to_each_of ps callback;
+      add_explicitly_removable_callback_to_each_of ps public_p callback;
 
-      to_public_promise p
+      public_p
 
     | 1 ->
       nth_resolved ps 0
@@ -2689,7 +2769,9 @@ struct
       invalid_arg "Lwt.pick [] would return a promise that is pending forever";
     match count_resolved_promises_in ps with
     | 0 ->
-      let p = new_pending ~how_to_cancel:(propagate_cancel_to_several ps) in
+      let p = new_pending ~how_to_cancel:(propagate_cancel_to_several ps) () in
+
+      let public_p = to_public_promise p in
 
       let callback result =
         let State_may_now_be_pending_proxy p = may_now_be_proxy p in
@@ -2699,9 +2781,9 @@ struct
           resolve ~allow_deferring:false p result in
         ignore p
       in
-      add_explicitly_removable_callback_to_each_of ps callback;
+      add_explicitly_removable_callback_to_each_of ps public_p callback;
 
-      to_public_promise p
+      public_p
 
     | 1 ->
       nth_resolved_and_cancel_pending ps 0
@@ -2770,7 +2852,9 @@ struct
     let rec check_for_already_resolved_promises ps' =
       match ps' with
       | [] ->
-        let p = new_pending ~how_to_cancel:(propagate_cancel_to_several ps) in
+        let p = new_pending ~how_to_cancel:(propagate_cancel_to_several ps) () in
+
+        let public_p = to_public_promise p in
 
         let callback _result =
           let State_may_now_be_pending_proxy p = may_now_be_proxy p in
@@ -2780,9 +2864,9 @@ struct
             resolve ~allow_deferring:false p result in
           ignore p
         in
-        add_explicitly_removable_callback_to_each_of ps callback;
+        add_explicitly_removable_callback_to_each_of ps public_p callback;
 
-        to_public_promise p
+        public_p
 
       | p::ps ->
         let Internal p = to_internal_promise p in
@@ -2828,7 +2912,9 @@ struct
     let rec check_for_already_resolved_promises ps' =
       match ps' with
       | [] ->
-        let p = new_pending ~how_to_cancel:(propagate_cancel_to_several ps) in
+        let p = new_pending ~how_to_cancel:(propagate_cancel_to_several ps) () in
+
+        let public_p = to_public_promise p in
 
         let callback _result =
           let State_may_now_be_pending_proxy p = may_now_be_proxy p in
@@ -2839,9 +2925,9 @@ struct
             resolve ~allow_deferring:false p result in
           ignore p
         in
-        add_explicitly_removable_callback_to_each_of ps callback;
+        add_explicitly_removable_callback_to_each_of ps public_p callback;
 
-        to_public_promise p
+        public_p
 
       | p::ps' ->
         let Internal p = to_internal_promise p in
@@ -2915,7 +3001,9 @@ struct
     let rec check_for_already_resolved_promises pending_acc ps' =
       match ps' with
       | [] ->
-        let p = new_pending ~how_to_cancel:(propagate_cancel_to_several ps) in
+        let p = new_pending ~how_to_cancel:(propagate_cancel_to_several ps) () in
+
+        let public_p = to_public_promise p in
 
         let callback _result =
           let State_may_now_be_pending_proxy p = may_now_be_proxy p in
@@ -2923,9 +3011,9 @@ struct
           let State_may_have_changed p = finish p [] [] ps in
           ignore p
         in
-        add_explicitly_removable_callback_to_each_of ps callback;
+        add_explicitly_removable_callback_to_each_of ps public_p callback;
 
-        to_public_promise p
+        public_p
 
       | p::ps' ->
         let Internal p_internal = to_internal_promise p in
@@ -3135,3 +3223,45 @@ struct
   let make_error exn = Result.Error exn
 end
 include Lwt_result_type
+
+module Lwt_owee_tracing =
+struct
+
+  let user_location : 'a t -> Owee_location.t =
+    fun t ->
+    match to_internal_promise t with
+    | Internal t ->
+      let state = (underlying t).state in
+      match state with
+      | Fulfilled _ -> Owee_location.none
+      | Rejected _ -> Owee_location.none
+      | Pending { user_code; _ } -> user_code
+
+  type packed = P : _ t -> packed
+
+  let rec waiters_successors callback_list acc =
+    match callback_list with
+    | Regular_callback_list_empty -> acc
+    | Regular_callback_list_concat (l1, l2) ->
+       waiters_successors l2 (waiters_successors l1 acc)
+    | Regular_callback_list_implicitly_removed_callback (waiter_opt, _) ->
+       (match waiter_opt with
+        | None -> acc
+        | Some waiter ->
+           (P (to_public_promise waiter) :: acc)
+       )
+    | Regular_callback_list_explicitly_removable_callback _
+      -> acc
+
+  let successors t =
+    match to_internal_promise t with
+    | Internal t ->
+      let state = (underlying t).state in
+      match state with
+      | Main_internal_types.Fulfilled _ -> []
+      | Main_internal_types.Rejected _ -> []
+      | Main_internal_types.Pending callbacks ->
+         waiters_successors callbacks.regular_callbacks []
+
+end
+include Lwt_owee_tracing

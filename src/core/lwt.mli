@@ -1953,6 +1953,11 @@ val ignore_result : _ t -> unit
       resolved, completing any associated side effects along the way. In fact,
       the function that does {e that} is ordinary {!Lwt.bind}. *)
 
+(** {3 Owee-based tracing} *)
+val user_location : _ t -> Owee_location.t
+
+type packed = P : _ t -> packed
+val successors : _ t -> packed list
 
 
 (**/**)
