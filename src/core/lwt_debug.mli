@@ -1970,6 +1970,9 @@ val def_position : _ t -> pos
 type packed = P : _ t -> packed
 val successors : _ t -> packed list
 
+val predecessors : _ t -> packed list
+
+(** {3 backward dependency tree} *)
 
 (**/**)
 
