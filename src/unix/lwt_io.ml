@@ -507,7 +507,7 @@ let make :
     mode : m mode ->
     (Lwt_bytes.t -> int -> int -> int Lwt.t) ->
       m channel =
-    fun ?buffer ?(close=Lwt.return) ?(seek=no_seek) ~mode perform_io ->
+    fun ?buffer ?(close=Lwt.return ?pos:None) ?(seek=no_seek) ~mode perform_io ->
   let (buffer, size) =
     match buffer with
     | Some buffer ->
