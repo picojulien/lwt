@@ -401,8 +401,10 @@ struct
   (* Promises proper. *)
   type ('a, 'u, 'c) promise = {
       pos :  pos option;
+      mutable parents :  mega_packed list;
       mutable state : ('a, 'u, 'c) state;
   }
+  and mega_packed = MP : _ promise -> mega_packed
   and (_, _, _) state =
     | Fulfilled : 'a                  -> ('a, underlying, resolved) state
     | Rejected  : exn                 -> ( _, underlying, resolved) state
@@ -1520,13 +1522,13 @@ sig
 end =
 struct
   let return ?pos v =
-    to_public_promise {pos ; state = Fulfilled v}
+    to_public_promise {pos ; parents = [] ; state = Fulfilled v}
 
   let of_result ?pos result =
-    to_public_promise {pos ; state = state_of_result result}
+    to_public_promise {pos ; parents = [] ; state = state_of_result result}
 
   let fail ?pos exn =
-    to_public_promise {pos ; state = Rejected exn}
+    to_public_promise {pos; parents = [] ; state = Rejected exn}
 
   let return_unit = return ()
   let return_none = return None
@@ -1538,10 +1540,10 @@ struct
   let return_error ?pos x = return ?pos (Result.Error x)
 
   let fail_with  ?pos msg =
-    to_public_promise {pos ; state = Rejected (Failure msg)}
+    to_public_promise {pos ; parents = [] ; state = Rejected (Failure msg)}
 
   let fail_invalid_arg ?pos msg =
-    to_public_promise {pos ; state = Rejected (Invalid_argument msg)}
+    to_public_promise {pos ; parents = [] ; state = Rejected (Invalid_argument msg)}
 end
 include Trivial_promises
 
@@ -1551,6 +1553,7 @@ module Pending_promises :
 sig
   (* Internal *)
   val new_pending :
+    parents: mega_packed list ->
     pos:pos option ->
     ?user_code:Owee_location.t ->
     how_to_cancel:how_to_cancel ->
@@ -1571,7 +1574,7 @@ sig
   val no_cancel : ?pos:pos -> 'a t -> 'a t
 end =
 struct
-  let new_pending ~pos ?(user_code = Owee_location.none) ~how_to_cancel () =
+  let new_pending ~parents ~pos ?(user_code = Owee_location.none) ~how_to_cancel () =
     let state =
       Pending {
         regular_callbacks = Regular_callback_list_empty;
@@ -1581,7 +1584,7 @@ struct
         user_code
       }
     in
-    {pos ; state}
+    {pos ; parents ; state}
 
   let propagate_cancel_to_several ps =
     (* Using a dirty cast here to avoid rebuilding the list :( Not bothering
@@ -1594,11 +1597,11 @@ struct
 
 
   let wait ?pos () =
-    let p = new_pending ~pos:pos ~how_to_cancel:Not_cancelable () in
+    let p = new_pending ~pos:pos ~parents:[] ~how_to_cancel:Not_cancelable () in
     to_public_promise p, to_public_resolver p
 
   let task ?pos () =
-    let p = new_pending ~pos:pos ~how_to_cancel:Cancel_this_promise () in
+    let p = new_pending ~pos:pos ~parents:[] ~how_to_cancel:Cancel_this_promise () in
     to_public_promise p, to_public_resolver p
 
 
@@ -1617,7 +1620,7 @@ struct
     Obj.magic node
 
   let add_task_r ?pos sequence =
-    let p = new_pending ~pos:pos ~how_to_cancel:Cancel_this_promise () in
+    let p = new_pending ~pos:pos  ~parents:[] ~how_to_cancel:Cancel_this_promise () in
     let node = Lwt_sequence.add_r (to_public_resolver p) sequence in
     let node = cast_sequence_node node p in
 
@@ -1628,7 +1631,7 @@ struct
     to_public_promise p
 
   let add_task_l  ?pos sequence =
-    let p = new_pending ~pos:pos ~how_to_cancel:Cancel_this_promise () in
+    let p = new_pending ~pos:pos ~parents:[] ~how_to_cancel:Cancel_this_promise () in
     let node = Lwt_sequence.add_l (to_public_resolver p) sequence in
     let node = cast_sequence_node node p in
 
@@ -1647,7 +1650,7 @@ struct
     | Rejected _ -> p
 
     | Pending _ ->
-      let p' = new_pending ~pos:pos ~how_to_cancel:Cancel_this_promise () in
+      let p' = new_pending ~pos:pos ~parents:[MP p_internal] ~how_to_cancel:Cancel_this_promise () in
 
       let callback p_result =
         let State_may_now_be_pending_proxy p' = may_now_be_proxy p' in
@@ -1690,7 +1693,7 @@ struct
     | Rejected _ -> p
 
     | Pending p_callbacks ->
-      let p' = new_pending ~pos:pos ~how_to_cancel:Not_cancelable () in
+      let p' = new_pending ~pos:pos ~parents:[MP p_internal] ~how_to_cancel:Not_cancelable () in
 
       let callback p_result =
         let State_may_now_be_pending_proxy p' = may_now_be_proxy p' in
@@ -1849,6 +1852,7 @@ struct
 
   let bind ?pos p f =
     let Internal p = to_internal_promise p in
+    let parents = [MP p] in
     let p = underlying p in
 
     (* In case [Lwt.bind] needs to defer the call to [f], this function will be
@@ -1872,6 +1876,7 @@ struct
       let p'' =
         new_pending
           ~pos:pos
+          ~parents
           ~user_code:(Owee_location.extract f)
           ~how_to_cancel:(Propagate_cancel_to_one p)
           ()
@@ -1936,7 +1941,7 @@ struct
           (p'', callback, p.state))
 
     | Rejected _ as result ->
-      to_public_promise {pos ; state = result}
+      to_public_promise {pos ; parents ; state = result}
 
     | Pending p_callbacks ->
       let (p'', callback) = create_result_promise_and_callback_if_deferred () in
@@ -1945,12 +1950,14 @@ struct
 
   let backtrace_bind ?pos add_loc p f =
     let Internal p = to_internal_promise p in
+    let parents = [MP p] in
     let p = underlying p in
 
     let create_result_promise_and_callback_if_deferred () =
       let p'' =
         new_pending
           ~pos:pos
+          ~parents
           ~user_code:(Owee_location.extract f)
           ~how_to_cancel:(Propagate_cancel_to_one p)
           ()
@@ -1997,7 +2004,7 @@ struct
           (p'', callback, p.state))
 
     | Rejected exn ->
-      to_public_promise {pos ; state = Rejected (add_loc exn)}
+      to_public_promise {pos ; parents ; state = Rejected (add_loc exn)}
 
     | Pending p_callbacks ->
       let (p'', callback) = create_result_promise_and_callback_if_deferred () in
@@ -2006,12 +2013,14 @@ struct
 
   let map ?pos f p =
     let Internal p = to_internal_promise p in
+    let parents = [MP p] in
     let p = underlying p in
 
     let create_result_promise_and_callback_if_deferred () =
       let p'' =
         new_pending
           ~pos:pos
+          ~parents
           ~user_code:(Owee_location.extract f)
           ~how_to_cancel:(Propagate_cancel_to_one p)
           ()
@@ -2052,14 +2061,14 @@ struct
         ~user_code:(fun () -> Owee_location.extract f)
         ~callback:(fun () ->
           to_public_promise
-            { pos ; state = try Fulfilled (f v) with exn -> Rejected exn})
+            { pos ; parents ; state = try Fulfilled (f v) with exn -> Rejected exn})
         ~if_deferred:(fun () ->
           let (p'', callback) =
             create_result_promise_and_callback_if_deferred () in
           (p'', callback, p.state))
 
     | Rejected _ as result ->
-      to_public_promise { pos ; state = result}
+      to_public_promise { pos ; parents ; state = result}
 
     | Pending p_callbacks ->
       let (p'', callback) = create_result_promise_and_callback_if_deferred () in
@@ -2070,12 +2079,14 @@ struct
     let p = try f () with exn -> fail exn in
 
     let Internal p = to_internal_promise p in
+    let parents = [MP p] in
     let p = underlying p in
 
     let create_result_promise_and_callback_if_deferred () =
       let p'' =
         new_pending
           ~pos:pos
+          ~parents
           ~user_code:(Owee_location.extract f)
           ~how_to_cancel:(Propagate_cancel_to_one p)
           ()
@@ -2132,12 +2143,14 @@ struct
   let backtrace_catch ?pos add_loc f h =
     let p = try f () with exn -> fail exn in
     let Internal p = to_internal_promise p in
+    let parents = [MP p] in
     let p = underlying p in
 
     let create_result_promise_and_callback_if_deferred () =
       let p'' =
         new_pending
           ~pos:pos
+          ~parents
           ~user_code:(Owee_location.extract f)
           ~how_to_cancel:(Propagate_cancel_to_one p)
           ()
@@ -2194,12 +2207,14 @@ struct
   let try_bind ?pos f f' h =
     let p = try f () with exn -> fail exn in
     let Internal p = to_internal_promise p in
+    let parents = [MP p] in
     let p = underlying p in
 
     let create_result_promise_and_callback_if_deferred () =
       let p'' =
         new_pending
           ~pos:pos
+          ~parents
           ~user_code:(Owee_location.extract f)
           ~how_to_cancel:(Propagate_cancel_to_one p)
           ()
@@ -2268,12 +2283,14 @@ struct
   let backtrace_try_bind ?pos add_loc f f' h =
     let p = try f () with exn -> fail exn in
     let Internal p = to_internal_promise p in
+    let parents = [MP p] in
     let p = underlying p in
 
     let create_result_promise_and_callback_if_deferred () =
       let p'' =
         new_pending
           ~pos:pos
+          ~parents
           ~user_code:(Owee_location.extract f)
           ~how_to_cancel:(Propagate_cancel_to_one p)
           ()
@@ -2585,9 +2602,11 @@ struct
 
   let join_owee_info = ref None
 
+  let pack_all ps = List.map (fun p -> let Internal p = to_internal_promise p in MP p) ps
 
   let join pos ps =
-    let p' = new_pending ~pos:pos ?user_code:!join_owee_info ~how_to_cancel:(propagate_cancel_to_several ps) () in
+    let parents = pack_all ps in
+    let p' = new_pending ~pos:pos ~parents ?user_code:!join_owee_info ~how_to_cancel:(propagate_cancel_to_several ps) () in
 
     let number_pending_in_ps = ref 0 in
     let join_result = ref (Fulfilled ()) in
@@ -2625,7 +2644,7 @@ struct
       match ps with
       | [] ->
         if !number_pending_in_ps = 0 then
-          to_public_promise {pos ; state = !join_result}
+          to_public_promise {pos ; parents ; state = !join_result}
         else
           to_public_promise p'
 
@@ -2749,12 +2768,13 @@ struct
   let prng = lazy (Random.State.make [||])
 
   let choose ?pos ps =
+    let parents= pack_all ps in
     if ps = [] then
       invalid_arg
         "Lwt.choose [] would return a promise that is pending forever";
     match count_resolved_promises_in ps with
     | 0 ->
-      let p = new_pending ~pos:pos ~how_to_cancel:(propagate_cancel_to_several ps) () in
+      let p = new_pending ~pos:pos ~parents ~how_to_cancel:(propagate_cancel_to_several ps) () in
 
       let public_p = to_public_promise p in
 
@@ -2776,11 +2796,12 @@ struct
       nth_resolved ps (Random.State.int (Lazy.force prng) n)
 
   let pick ?pos ps =
+    let parents= pack_all ps in
     if ps = [] then
       invalid_arg "Lwt.pick [] would return a promise that is pending forever";
     match count_resolved_promises_in ps with
     | 0 ->
-      let p = new_pending ~pos:pos ~how_to_cancel:(propagate_cancel_to_several ps) () in
+      let p = new_pending ~pos:pos ~parents  ~how_to_cancel:(propagate_cancel_to_several ps) () in
 
       let public_p = to_public_promise p in
 
@@ -2836,6 +2857,7 @@ struct
   let nchoose ?pos ps =
     (* If at least one promise in [ps] is found fulfilled, this function is
        called to find all such promises. *)
+    let parents= pack_all ps in
     if ps = [] then
       invalid_arg
         "Lwt.nchoose [] would return a promise that is pending forever";
@@ -2851,7 +2873,7 @@ struct
           collect_already_fulfilled_promises_or_find_rejected (v::acc) ps
 
         | Rejected _ as result ->
-          to_public_promise {pos ; state = result}
+          to_public_promise {pos ; parents;state = result}
 
         | Pending _ ->
           collect_already_fulfilled_promises_or_find_rejected acc ps
@@ -2861,9 +2883,10 @@ struct
        rejected, adds a callback to all promises in [ps] (all of which are
        pending). *)
     let rec check_for_already_resolved_promises ps' =
+      let parents = pack_all ps in
       match ps' with
       | [] ->
-        let p = new_pending ~pos:pos ~how_to_cancel:(propagate_cancel_to_several ps) () in
+        let p = new_pending ~pos:pos ~parents ~how_to_cancel:(propagate_cancel_to_several ps) () in
 
         let public_p = to_public_promise p in
 
@@ -2886,7 +2909,7 @@ struct
           collect_already_fulfilled_promises_or_find_rejected [v] ps
 
         | Rejected _ as result ->
-          to_public_promise {pos ; state = result}
+          to_public_promise {pos ; parents ; state = result}
 
         | Pending _ ->
           check_for_already_resolved_promises ps
@@ -2898,6 +2921,7 @@ struct
   (* See [nchoose]. This function differs only in having additional calls to
      [cancel]. *)
   let npick ?pos ps =
+    let parents= pack_all ps in
     if ps = [] then
       invalid_arg "Lwt.npick [] would return a promise that is pending forever";
     let rec collect_already_fulfilled_promises_or_find_rejected acc ps' =
@@ -2914,7 +2938,7 @@ struct
 
         | Rejected _ as result ->
           List.iter cancel ps;
-          to_public_promise {pos ; state = result}
+          to_public_promise {pos ; parents ; state = result}
 
         | Pending _ ->
           collect_already_fulfilled_promises_or_find_rejected acc ps'
@@ -2923,7 +2947,7 @@ struct
     let rec check_for_already_resolved_promises ps' =
       match ps' with
       | [] ->
-        let p = new_pending ~pos:pos ~how_to_cancel:(propagate_cancel_to_several ps) () in
+        let p = new_pending ~pos:pos ~parents ~how_to_cancel:(propagate_cancel_to_several ps) () in
 
         let public_p = to_public_promise p in
 
@@ -2948,7 +2972,7 @@ struct
 
         | Rejected _ as result ->
           List.iter cancel ps;
-          to_public_promise { pos ; state = result}
+          to_public_promise { pos ; parents ; state = result}
 
         | Pending _ ->
           check_for_already_resolved_promises ps'
@@ -2961,6 +2985,7 @@ struct
 
   (* Same general pattern as [npick] and [nchoose]. *)
   let nchoose_split ?pos ps =
+    let parents = pack_all ps in
     if ps = [] then
       invalid_arg
         "Lwt.nchoose_split [] would return a promise that is pending forever";
@@ -3003,7 +3028,7 @@ struct
           collect_already_resolved_promises (v::results) pending ps
 
         | Rejected _ as result ->
-          to_public_promise { pos ; state = result}
+          to_public_promise { pos ;parents ; state = result}
 
         | Pending _ ->
           collect_already_resolved_promises results (p::pending) ps
@@ -3012,7 +3037,7 @@ struct
     let rec check_for_already_resolved_promises pending_acc ps' =
       match ps' with
       | [] ->
-        let p = new_pending ~pos:pos ~how_to_cancel:(propagate_cancel_to_several ps) () in
+        let p = new_pending ~pos:pos ~parents ~how_to_cancel:(propagate_cancel_to_several ps) () in
 
         let public_p = to_public_promise p in
 
@@ -3033,7 +3058,7 @@ struct
           collect_already_resolved_promises [v] pending_acc ps'
 
         | Rejected _ as result ->
-          to_public_promise {pos ; state = result}
+          to_public_promise {pos ; parents ; state = result}
 
         | Pending _ ->
           check_for_already_resolved_promises (p::pending_acc) ps'
@@ -3277,6 +3302,7 @@ struct
 
   type packed = P : _ t -> packed
 
+  let to_packed  (MP p) = P (to_public_promise p)
 
   let rec waiters_successors callback_list acc =
     match callback_list with
@@ -3301,6 +3327,11 @@ struct
       | Main_internal_types.Rejected _ -> []
       | Main_internal_types.Pending callbacks ->
          waiters_successors callbacks.regular_callbacks []
+
+  let predecessors t =
+    match to_internal_promise t with
+    | Internal {parents ;_ } ->
+       List.map to_packed parents
 
 end
 include Lwt_owee_tracing
