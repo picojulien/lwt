@@ -60,8 +60,9 @@ packaging-test:
 install-for-packaging-test: clean
 	opam pin add --yes --no-action lwt .
 	opam pin add --yes --no-action lwt_ppx .
+	opam pin add --yes --no-action lwt_debug_ppx .
 	opam pin add --yes --no-action lwt_react .
-	opam reinstall --yes lwt lwt_ppx lwt_react
+	opam reinstall --yes lwt lwt_ppx lwt_react  lwt_debug_ppx
 
 .PHONY: uninstall-after-packaging-test
 uninstall-after-packaging-test:

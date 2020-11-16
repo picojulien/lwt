@@ -1,0 +1,6 @@
+(library
+ (public_name lwt_debug_ppx)
+ (name main)
+ (kind ppx_rewriter)
+ (libraries ppxlib)
+ (preprocess (pps ppxlib.metaquot)))

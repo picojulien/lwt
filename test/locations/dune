@@ -1,0 +1,11 @@
+(executable
+ (name test_locations)
+ (libraries lwt lwt.unix)
+ (preprocess (pps lwt_debug_ppx))
+ )
+
+(alias
+ (name runtest_location)
+ (package lwt)
+ (action (run %{exe:test_locations.exe}))
+)

@@ -1,0 +1,29 @@
+opam-version: "2.0"
+
+synopsis: "PPX preprocessor do debug Lwt"
+
+version: "2.0.1"
+license: "MIT"
+homepage: "https://github.com/ocsigen/lwt"
+doc: "https://ocsigen.org/lwt/dev/api/Ppx_lwt"
+bug-reports: "https://github.com/ocsigen/lwt/issues"
+
+authors: [
+  "julien Tesson"
+]
+maintainer: [
+  "Julien Tesson <julien.tesson@nomadic-labs.com>"
+]
+dev-repo: "git+https://github.com/julien.t/lwt.git"
+
+depends: [
+  "dune" {>= "1.8.0"}
+  "lwt"
+  "ocaml" {>= "4.02.0"}
+  "ocaml-migrate-parsetree" {>= "1.7.0"}
+  "ppx_tools_versioned" {>= "5.4.0"}
+]
+
+build: [
+  ["dune" "build" "-p" name "-j" jobs]
+]
