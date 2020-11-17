@@ -31,7 +31,7 @@ let exp_of_position ~loc (fname, line, bol, col) =
     pexp_desc =
       Pexp_tuple
         [
-          exp_of_string ~loc fname;
+          exp_of_string ~loc (Filename.basename fname);
           exp_of_int ~loc line;
           exp_of_int ~loc bol;
           exp_of_int ~loc col;
