@@ -32,17 +32,26 @@ module Option = struct
                    v
 end
 
-let pp_postion ppf (file,line,bol,col) =
+let pp_position ppf (file,line,bol,col) =
   Format.fprintf ppf
     "file %s, line %d, col %d"
     file
     line
     (col-bol)
+  [@@ocaml.warning "-32"]
+
+let pp_position_short ppf (file,line,bol,col) =
+  Format.fprintf ppf
+    "%s:%d:%d"
+    file
+    line
+    (col-bol)
+
 
 let print_pos prefix pcked_list =
   Format.printf "%s: @[%a@]@."
     prefix
-    (Format.pp_print_list pp_postion)
+    (Format.pp_print_list ~pp_sep:Format.pp_print_space pp_position_short)
   (List.map (fun p ->
     match p with P p ->
         Lwt.def_position p)
