@@ -17,13 +17,16 @@ let exp_of_string ~loc str =
     pexp_desc = Pexp_constant (Pconst_string (str, None));
     pexp_loc = loc;
     pexp_attributes = [];
+    pexp_loc_stack = []
   }
+
 
 let exp_of_int ~loc i =
   {
     pexp_desc = Pexp_constant (Pconst_integer (string_of_int i, None));
     pexp_loc = loc;
     pexp_attributes = [];
+    pexp_loc_stack = []
   }
 
 let exp_of_position ~loc (fname, line, bol, col) =
@@ -38,10 +41,11 @@ let exp_of_position ~loc (fname, line, bol, col) =
         ];
     pexp_loc = loc;
     pexp_attributes = [];
+    pexp_loc_stack = [];
   }
 
 let rewriter exp (node : Parsetree.expression) =
-  let { pexp_desc; pexp_loc; pexp_attributes = _ } = node in
+  let { pexp_desc; pexp_loc;  _ } = node in
   let loc = pexp_loc in
   let exp = exp loc in
   let pos_arg = (Labelled "pos", exp_of_position ~loc (pos_of_location loc)) in
@@ -74,6 +78,7 @@ let exp_of_fun_id loc id =
     pexp_desc = Pexp_ident { txt = ident_of_str id; loc };
     pexp_loc = loc;
     pexp_attributes = [];
+    pexp_loc_stack = [];
   }
 
 (* let extension = Extension.declare
