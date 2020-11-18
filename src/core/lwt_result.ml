@@ -2,7 +2,7 @@
    details, or visit https://github.com/ocsigen/lwt/blob/master/LICENSE.md. *)
 
 
-
+module Lwt = Lwt_debug
 (** Module [Lwt_result]: explicit error handling *)
 
 open Result
