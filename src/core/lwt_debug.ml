@@ -380,6 +380,55 @@ type storage = (unit -> unit) Storage_map.t
 
 type pos = string*int*int*int   (* fname,line,bol,cnum *)
 
+module WeakSet = struct
+  type 'a t = { mutable table : 'a Weak.t }
+
+  let empty () = { table = Weak.create 0 }
+
+
+  let create vl =
+    let len = List.length vl in
+    let table = Weak.create len in
+    List.iteri
+      (fun i v -> Weak.set table i (Some v))
+      vl;
+    { table }
+
+  let singleton v =
+    let table = Weak.create 1 in
+    Weak.set table 0 (Some v);
+    { table }
+
+  let add s v =
+    (* TODO, ensure to add only once ? *)
+    let length = Weak.length s.table in
+    let table = Weak.create (length+1)  in
+    Weak.blit s.table 0 table 0 length;
+    Weak.set table length (Some v);
+    s.table <- table
+  [@@ocaml.warning "-32"]
+
+  let comp_last s cmp v =
+    Option.fold ~none:false ~some:(fun v' -> cmp v v') (Weak.get s.table (Weak.length s.table -1))
+
+  let iteri f s =
+    for i=0 to  Weak.length s.table -1  do
+      f i (Weak.get s.table i)
+    done
+  [@@ocaml.warning "-32"]
+
+
+  let to_list s =
+    let rec loop i length res =
+      if i = length then
+        res
+      else loop (i+1)length
+             (match Weak.get s.table i with
+                Some v -> v ::res
+              | None -> res)
+    in
+    loop 0 (Weak.length s.table) []
+end
 
 module Main_internal_types =
 struct
@@ -398,13 +447,14 @@ struct
 
   [@@@ocaml.warning "+37"]
 
+
   (* Promises proper. *)
   type ('a, 'u, 'c) promise = {
       pos :  pos option;
-      mutable parents :  mega_packed list;
+      mutable parents :  internal_packed WeakSet.t;
       mutable state : ('a, 'u, 'c) state;
   }
-  and mega_packed = MP : _ promise -> mega_packed
+  and internal_packed = IP : _ promise -> internal_packed
   and (_, _, _) state =
     | Fulfilled : 'a                  -> ('a, underlying, resolved) state
     | Rejected  : exn                 -> ( _, underlying, resolved) state
@@ -740,6 +790,28 @@ struct
      of OCaml. *)
 end
 open Basic_helpers
+
+(* Helper module for parent-promises sets *)
+
+  module PSet = struct
+    include WeakSet
+
+    (* build a week pointer to only one element *)
+    let singleton v =
+      singleton (IP v)
+
+    (* internal use *)
+    (* one element unlesse it has just been added.
+       We don't scan the whole table but only the last added promise
+       as a common pattern is to add a parent promise then to add it's
+       underlying promise, which is probably very often the same thing
+     *)
+    let add s v =
+      if comp_last s (fun v (IP v') -> identical v (Obj.magic v')) v then
+        add s (IP v)
+  end
+
+
 
 
 
@@ -1522,13 +1594,13 @@ sig
 end =
 struct
   let return ?pos v =
-    to_public_promise {pos ; parents = [] ; state = Fulfilled v}
+    to_public_promise {pos ; parents = PSet.empty() ; state = Fulfilled v}
 
   let of_result ?pos result =
-    to_public_promise {pos ; parents = [] ; state = state_of_result result}
+    to_public_promise {pos ; parents = PSet.empty() ; state = state_of_result result}
 
   let fail ?pos exn =
-    to_public_promise {pos; parents = [] ; state = Rejected exn}
+    to_public_promise {pos; parents = PSet.empty () ; state = Rejected exn}
 
   let return_unit = return ()
   let return_none = return None
@@ -1540,10 +1612,10 @@ struct
   let return_error ?pos x = return ?pos (Result.Error x)
 
   let fail_with  ?pos msg =
-    to_public_promise {pos ; parents = [] ; state = Rejected (Failure msg)}
+    to_public_promise {pos ; parents = PSet.empty() ; state = Rejected (Failure msg)}
 
   let fail_invalid_arg ?pos msg =
-    to_public_promise {pos ; parents = [] ; state = Rejected (Invalid_argument msg)}
+    to_public_promise {pos ; parents = PSet.empty() ; state = Rejected (Invalid_argument msg)}
 end
 include Trivial_promises
 
@@ -1553,7 +1625,7 @@ module Pending_promises :
 sig
   (* Internal *)
   val new_pending :
-    parents: mega_packed list ->
+    parents: internal_packed WeakSet.t ->
     pos:pos option ->
     ?user_code:Owee_location.t ->
     how_to_cancel:how_to_cancel ->
@@ -1597,11 +1669,11 @@ struct
 
 
   let wait ?pos () =
-    let p = new_pending ~pos:pos ~parents:[] ~how_to_cancel:Not_cancelable () in
+    let p = new_pending ~pos:pos ~parents:(PSet.empty()) ~how_to_cancel:Not_cancelable () in
     to_public_promise p, to_public_resolver p
 
   let task ?pos () =
-    let p = new_pending ~pos:pos ~parents:[] ~how_to_cancel:Cancel_this_promise () in
+    let p = new_pending ~pos:pos ~parents:(PSet.empty()) ~how_to_cancel:Cancel_this_promise () in
     to_public_promise p, to_public_resolver p
 
 
@@ -1620,7 +1692,7 @@ struct
     Obj.magic node
 
   let add_task_r ?pos sequence =
-    let p = new_pending ~pos:pos  ~parents:[] ~how_to_cancel:Cancel_this_promise () in
+    let p = new_pending ~pos:pos  ~parents:(PSet.empty()) ~how_to_cancel:Cancel_this_promise () in
     let node = Lwt_sequence.add_r (to_public_resolver p) sequence in
     let node = cast_sequence_node node p in
 
@@ -1631,7 +1703,7 @@ struct
     to_public_promise p
 
   let add_task_l  ?pos sequence =
-    let p = new_pending ~pos:pos ~parents:[] ~how_to_cancel:Cancel_this_promise () in
+    let p = new_pending ~pos:pos ~parents:(PSet.empty()) ~how_to_cancel:Cancel_this_promise () in
     let node = Lwt_sequence.add_l (to_public_resolver p) sequence in
     let node = cast_sequence_node node p in
 
@@ -1642,7 +1714,6 @@ struct
     to_public_promise p
 
 
-
   let protected ?pos p =
     let Internal p_internal = to_internal_promise p in
     match (underlying p_internal).state with
@@ -1650,7 +1721,7 @@ struct
     | Rejected _ -> p
 
     | Pending _ ->
-      let p' = new_pending ~pos:pos ~parents:[MP p_internal] ~how_to_cancel:Cancel_this_promise () in
+      let p' = new_pending ~pos:pos ~parents:(PSet.singleton p_internal) ~how_to_cancel:Cancel_this_promise () in
 
       let callback p_result =
         let State_may_now_be_pending_proxy p' = may_now_be_proxy p' in
@@ -1693,7 +1764,7 @@ struct
     | Rejected _ -> p
 
     | Pending p_callbacks ->
-      let p' = new_pending ~pos:pos ~parents:[MP p_internal] ~how_to_cancel:Not_cancelable () in
+      let p' = new_pending ~pos:pos ~parents:(PSet.singleton p_internal) ~how_to_cancel:Not_cancelable () in
 
       let callback p_result =
         let State_may_now_be_pending_proxy p' = may_now_be_proxy p' in
@@ -1806,8 +1877,9 @@ struct
       (type c)
       ~(outer_promise : ('a, underlying, pending) promise)
       ~(user_provided_promise : ('a, _, c) promise)
-        : ('a, underlying, c) state_changed =
-
+      : ('a, underlying, c) state_changed =
+    (* The outer promise results depends on the user_provided_promise *)
+    PSet.add outer_promise.parents user_provided_promise;
     (* Using [p'] as it's the name used inside [bind], etc., for promises with
        this role -- [p'] is the promise returned by the user's function. *)
     let p' = underlying user_provided_promise in
@@ -1852,8 +1924,10 @@ struct
 
   let bind ?pos p f =
     let Internal p = to_internal_promise p in
-    let parents = [MP p] in
+    let parents = PSet.singleton p in
     let p = underlying p in
+    let () = PSet.add parents p in
+
 
     (* In case [Lwt.bind] needs to defer the call to [f], this function will be
        called to create:
@@ -1931,6 +2005,9 @@ struct
 
     match p.state with
     | Fulfilled v ->
+       (* here the returned promise is the result of (f v).
+          I don't think we can keep the tail call and change the position.
+        *)
       run_callback_or_defer_it
         ~run_immediately_and_ensure_tail_call:true
         ~user_code:(fun () -> Owee_location.extract f)
@@ -1950,8 +2027,9 @@ struct
 
   let backtrace_bind ?pos add_loc p f =
     let Internal p = to_internal_promise p in
-    let parents = [MP p] in
+    let parents = PSet.singleton p in
     let p = underlying p in
+    let () = PSet.add parents p in
 
     let create_result_promise_and_callback_if_deferred () =
       let p'' =
@@ -2013,8 +2091,9 @@ struct
 
   let map ?pos f p =
     let Internal p = to_internal_promise p in
-    let parents = [MP p] in
+    let parents = PSet.singleton p in
     let p = underlying p in
+    let () = PSet.add parents p in
 
     let create_result_promise_and_callback_if_deferred () =
       let p'' =
@@ -2079,8 +2158,9 @@ struct
     let p = try f () with exn -> fail exn in
 
     let Internal p = to_internal_promise p in
-    let parents = [MP p] in
+    let parents = PSet.singleton p in
     let p = underlying p in
+    let () = PSet.add parents p in
 
     let create_result_promise_and_callback_if_deferred () =
       let p'' =
@@ -2143,7 +2223,7 @@ struct
   let backtrace_catch ?pos add_loc f h =
     let p = try f () with exn -> fail exn in
     let Internal p = to_internal_promise p in
-    let parents = [MP p] in
+    let parents = PSet.singleton p in
     let p = underlying p in
 
     let create_result_promise_and_callback_if_deferred () =
@@ -2207,7 +2287,7 @@ struct
   let try_bind ?pos f f' h =
     let p = try f () with exn -> fail exn in
     let Internal p = to_internal_promise p in
-    let parents = [MP p] in
+    let parents = PSet.singleton p in
     let p = underlying p in
 
     let create_result_promise_and_callback_if_deferred () =
@@ -2283,7 +2363,7 @@ struct
   let backtrace_try_bind ?pos add_loc f f' h =
     let p = try f () with exn -> fail exn in
     let Internal p = to_internal_promise p in
-    let parents = [MP p] in
+    let parents = PSet.singleton p in
     let p = underlying p in
 
     let create_result_promise_and_callback_if_deferred () =
@@ -2602,7 +2682,12 @@ struct
 
   let join_owee_info = ref None
 
-  let pack_all ps = List.map (fun p -> let Internal p = to_internal_promise p in MP p) ps
+  let pack_all ps = PSet.create @@
+                      List.map
+                        (fun p ->
+                          let Internal p = to_internal_promise p in
+                          IP p)
+                        ps
 
   let join pos ps =
     let parents = pack_all ps in
@@ -2883,7 +2968,6 @@ struct
        rejected, adds a callback to all promises in [ps] (all of which are
        pending). *)
     let rec check_for_already_resolved_promises ps' =
-      let parents = pack_all ps in
       match ps' with
       | [] ->
         let p = new_pending ~pos:pos ~parents ~how_to_cancel:(propagate_cancel_to_several ps) () in
@@ -3302,7 +3386,9 @@ struct
 
   type packed = P : _ t -> packed
 
-  let to_packed  (MP p) = P (to_public_promise p)
+  (* type public_packed = packed *)
+
+  let to_packed  (IP p) = P (to_public_promise p)
 
   let rec waiters_successors callback_list acc =
     match callback_list with
@@ -3331,7 +3417,7 @@ struct
   let predecessors t =
     match to_internal_promise t with
     | Internal {parents ;_ } ->
-       List.map to_packed parents
+       List.map to_packed (PSet.to_list parents)
 
 end
 include Lwt_owee_tracing
