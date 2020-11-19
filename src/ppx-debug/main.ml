@@ -130,6 +130,7 @@ let rules =
     [
       "wait";
       "return";
+      "return_ok";
       "fail";
       "bind";
       "catch";
