@@ -18,6 +18,7 @@ maintainer: [
 dev-repo: "git+https://github.com/ocsigen/lwt.git"
 
 depends: [
+  "owee"
   "cppo" {build & >= "1.1.0"}
   "dune" {>= "1.8.0"}
   "dune-configurator"
