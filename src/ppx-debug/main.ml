@@ -163,49 +163,9 @@ let rules =
   positionnable
   @ List.map (fun s -> "Lwt." ^ s) positionnable
   @ [">>="; ">|="; "<?>"; "<&>"; "=<<"; "=|<"]
+  @ List.map (fun s -> "Error_monad." ^ s) positionnable
+  @ [">>=?"; ">|=?"]
 
-(* @ (let rewriter = rewriter (fun loc -> [%expr Lwt.return]) in
- *    List.map
- *      (fun id -> Context_free.Rule.special_function id rewriter)
- *      ["return"; "Lwt.return"])
- * @ (let rewriter = rewriter (fun loc -> [%expr Lwt.fail]) in
- *    List.map
- *      (fun id -> Context_free.Rule.special_function id rewriter)
- *      ["fail"; "Lwt.fail"])
- * @ (let rewriter = rewriter (fun loc -> [%expr Lwt.return]) in
- *    List.map
- *      (fun id -> Context_free.Rule.special_function id rewriter)
- *      ["return"; "Lwt.return"])
- * @ (let rewriter = rewriter (fun loc -> [%expr Lwt.bind]) in
- *    List.map
- *      (fun id -> Context_free.Rule.special_function id rewriter)
- *      [">>="; "bind"; "Lwt.bind"])
- * @ (let rewriter = rewriter (fun loc -> [%expr Lwt.catch]) in
- *    List.map
- *      (fun id -> Context_free.Rule.special_function id rewriter)
- *      ["catch"; "Lwt.catch"])
- * @ (let rewriter = rewriter (fun loc -> [%expr Lwt.finalize]) in
- *    List.map
- *      (fun id -> Context_free.Rule.special_function id rewriter)
- *      ["finalize"; "Lwt.finalize"])
- * @ (let rewriter = rewriter (fun loc -> [%expr Lwt.try_bind]) in
- *    List.map
- *      (fun id -> Context_free.Rule.special_function id rewriter)
- *      ["try_bind"; "Lwt.try_bind"])
- * @ (let rewriter = rewriter (fun loc -> [%expr Lwt.both]) in
- *    List.map
- *      (fun id -> Context_free.Rule.special_function id rewriter)
- *      ["both"; "Lwt.both"])
- * @ [] *)
 
-(* let rule_join =
- *   [
- *     Context_free.Rule.special_function
- *       "join"
- *       (rewriter (fun loc -> [%expr Lwt.join]));
- *     Context_free.Rule.special_function
- *       "Lwt.join"
- *       (rewriter (fun loc -> [%expr Lwt.join]));
- *   ] *)
 
 let () = Driver.register_transformation ~rules "my_transformation"
