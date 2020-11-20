@@ -1457,7 +1457,7 @@ val return_false : bool t
 
 (** {3 Result type} *)
 
-type +'a result = ('a, exn) Result.result
+type +'a result = 'a Lwt_debug.result
 (** Representation of the content of a resolved promise of type
     ['a ]{!Lwt.t}.
 
@@ -1524,7 +1524,7 @@ val wakeup_later_result : 'a u -> 'a result -> unit
 
 (** {3 State query} *)
 
-type 'a state =
+type 'a state = 'a Lwt_debug.state =
   | Return of 'a
   | Fail of exn
   | Sleep
@@ -1551,7 +1551,7 @@ val state : 'a t -> 'a state
     instead to pass additional values explicitly in tuples, or maintain explicit
     associative maps for them. *)
 
-type 'a key
+type 'a key = 'a Lwt_debug.key
 (** Keys into the implicit callback argument map, for implicit arguments of type
     ['a option].
 
