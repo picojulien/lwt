@@ -1,0 +1,5 @@
+(library
+ (public_name lwt_debug_ppx.locator_lib)
+ (name locator_ppx)
+ (libraries ppxlib lwt_debug_ppx.common)
+ (preprocess (pps ppxlib.metaquot)))

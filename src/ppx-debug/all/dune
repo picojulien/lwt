@@ -1,0 +1,24 @@
+(library
+ (public_name lwt_debug_ppx)
+ (name main)
+ (kind ppx_rewriter)
+ (modules main)
+ (libraries ppxlib lwt_debug_ppx.module_lib lwt_debug_ppx.locator_lib)
+ (preprocess (pps ppxlib.metaquot)))
+
+(library
+ (public_name lwt_debug_ppx.loca)
+ (name main_locator_ppx)
+ (kind ppx_rewriter)
+ (modules main_locator_ppx)
+ (libraries ppxlib lwt_debug_ppx.module_lib lwt_debug_ppx.locator_lib)
+ (preprocess (pps ppxlib.metaquot)))
+
+
+(library
+ (public_name lwt_debug_ppx.mad)
+ (name main_module_replacer)
+ (kind ppx_rewriter)
+ (modules main_module_replacer)
+ (libraries ppxlib lwt_debug_ppx.module_lib lwt_debug_ppx.locator_lib)
+ (preprocess (pps ppxlib.metaquot)))

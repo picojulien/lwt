@@ -1,0 +1,5 @@
+(library
+ (public_name lwt_debug_ppx.module_lib)
+ (name module_replacer)
+ (libraries ppxlib lwt_debug_ppx.common)
+ (preprocess (pps ppxlib.metaquot)))
