@@ -3,4 +3,5 @@
  (name main)
  (kind ppx_rewriter)
  (libraries ppxlib)
+ (modules ("common" locator_ppx module_replacer main))
  (preprocess (pps ppxlib.metaquot)))
