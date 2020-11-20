@@ -48,11 +48,8 @@ let rewriter exp (node : Parsetree.expression) =
   | _ ->
       None
 
-let exp_of_fun_id ?replace_prefix_id ?replacement_prefix_id id =
-  let txt =
-    snd
-    @@ replace_module_prefix_id ?replace_prefix_id ?replacement_prefix_id id
-  in
+let exp_of_fun_id ~replacement_prefix_id id =
+  let txt = snd @@ replace_module_prefix_id ~replacement_prefix_id id in
   fun loc ->
     { pexp_desc = Pexp_ident {txt; loc};
       pexp_loc = loc;
@@ -65,18 +62,10 @@ let exp_of_fun_id ?replace_prefix_id ?replacement_prefix_id id =
  *     Ast_pattern.(single_expr_payload (__))
  *     instr *)
 
-let replace_prefix_id = Some (Longident.parse "Lwt")
-
-let replacement_prefix_id = Some (Longident.parse "Lwt_debug")
-
 let rules =
   List.map (fun id ->
       let rewriter =
-        rewriter
-          (exp_of_fun_id
-             (Longident.parse id)
-             ?replace_prefix_id
-             ?replacement_prefix_id)
+        rewriter (exp_of_fun_id (Longident.parse id) ~replacement_prefix_id)
       in
       Context_free.Rule.special_function id rewriter)
   @@
