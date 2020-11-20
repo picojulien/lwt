@@ -1,4 +1,4 @@
-version=0.10
+version=0.15.0
 wrap-fun-args=false
 let-binding-spacing=compact
 field-space=loose
@@ -10,4 +10,4 @@ margin=80
 module-item-spacing=sparse
 parens-tuple=always
 parens-tuple-patterns=always
-break-string-literals=wrap
+break-string-literals=auto

@@ -5,12 +5,12 @@ default: build
 # build the usual development packages
 .PHONY: build
 build:
-	dune build
+	dune build --root . 
 
 # run unit tests for package lwt
 .PHONY: test
 test: build
-	dune runtest
+	dune runtest --root . 
 
 # Promote expect test output.
 .PHONY : promote
