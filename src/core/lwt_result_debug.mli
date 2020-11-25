@@ -12,36 +12,39 @@
 
 type (+'a, +'b) t = ('a, 'b) Result.result Lwt.t
 
-val return : 'a -> ('a, _) t
 
-val fail : 'b -> (_, 'b) t
+type pos = string*int*int*int
 
-val lift : ('a, 'b) Result.result -> ('a, 'b) t
+val return : ?pos:pos -> 'a -> ('a, _) t
 
-val ok : 'a Lwt.t -> ('a, _) t
+val fail : ?pos:pos -> 'b -> (_, 'b) t
 
-val catch : 'a Lwt.t -> ('a, exn) t
+val lift : ?pos:pos -> ('a, 'b) Result.result -> ('a, 'b) t
+
+val ok : ?pos:pos -> 'a Lwt.t -> ('a, _) t
+
+val catch : ?pos:pos -> 'a Lwt.t -> ('a, exn) t
 (** [catch x] behaves like [return y] if [x] evaluates to [y],
     and like [fail e] if [x] raises [e] *)
 
-val get_exn : ('a, exn) t -> 'a Lwt.t
+val get_exn : ?pos:pos -> ('a, exn) t -> 'a Lwt.t
 (** [get_exn] is the opposite of {!catch}: it unwraps the result type,
     returning the value in case of success, calls {!Lwt.fail} in
     case of error. *)
 
-val map : ('a -> 'b) -> ('a,'e) t -> ('b,'e) t
+val map : ?pos:pos -> ('a -> 'b) -> ('a,'e) t -> ('b,'e) t
 
-val map_err : ('e1 -> 'e2) -> ('a,'e1) t -> ('a,'e2) t
+val map_err : ?pos:pos -> ('e1 -> 'e2) -> ('a,'e1) t -> ('a,'e2) t
 
-val bind : ('a,'e) t -> ('a -> ('b,'e) t) -> ('b,'e) t
+val bind : ?pos:pos -> ('a,'e) t -> ('a -> ('b,'e) t) -> ('b,'e) t
 
-val bind_lwt : ('a,'e) t -> ('a -> 'b Lwt.t) -> ('b,'e) t
+val bind_lwt : ?pos:pos -> ('a,'e) t -> ('a -> 'b Lwt.t) -> ('b,'e) t
 
-val bind_lwt_err : ('a,'e1) t -> ('e1 -> 'e2 Lwt.t) -> ('a,'e2) t
+val bind_lwt_err : ?pos:pos -> ('a,'e1) t -> ('e1 -> 'e2 Lwt.t) -> ('a,'e2) t
 
-val bind_result : ('a,'e) t -> ('a -> ('b,'e) Result.result) -> ('b,'e) t
+val bind_result : ?pos:pos -> ('a,'e) t -> ('a -> ('b,'e) Result.result) -> ('b,'e) t
 
-val both : ('a,'e) t -> ('b,'e) t -> ('a * 'b,'e) t
+val both : ?pos:pos -> ('a,'e) t -> ('b,'e) t -> ('a * 'b,'e) t
 (** [Lwt.both p_1 p_2] returns a promise that is pending until {e both} promises
     [p_1] and [p_2] become {e resolved}.
     If only [p_1] is [Error e], the promise is resolved with [Error e],
@@ -51,8 +54,8 @@ val both : ('a,'e) t -> ('b,'e) t -> ('a * 'b,'e) t
 
 
 module Infix : sig
-  val (>|=) : ('a,'e) t -> ('a -> 'b) -> ('b,'e) t
-  val (>>=) : ('a,'e) t -> ('a -> ('b,'e) t) -> ('b,'e) t
+  val (>|=) : ('a,'e) t -> ?pos:pos -> ('a -> 'b) -> ('b,'e) t
+  val (>>=) : ('a,'e) t -> ?pos:pos -> ('a -> ('b,'e) t) -> ('b,'e) t
 end
 
 (** {3 Let syntax} *)

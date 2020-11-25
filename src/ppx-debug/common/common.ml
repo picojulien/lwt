@@ -20,6 +20,7 @@ let rec list_of_ident id =
 
 let replacement_prefix_id =
   [ (Longident.parse "Lwt", Longident.parse "Lwt_debug");
+    (Longident.parse "Lwt_result", Longident.parse "Lwt_result_debug");
     (Longident.parse "Error_monad", Longident.parse "Error_monad_debug");
     ( Longident.parse "Tezos_error_monad.Error_monad",
       Longident.parse "Tezos_error_monad.Error_monad_debug" ) ]
