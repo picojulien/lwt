@@ -1965,7 +1965,7 @@ val ignore_result : _ t -> unit
 (** {3 Owee-based tracing} *)
 val user_location : _ t -> Owee_location.t
 
-val def_position : _ t -> pos
+val def_position : _ t -> pos option
 
 type packed = P : _ t -> packed
 val successors : _ t -> packed list

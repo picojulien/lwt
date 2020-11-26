@@ -3373,15 +3373,16 @@ struct
         (fun (fname, line,col) -> (fname, line, 0, col))
         (Owee_location.lookup t)
 
-  let def_position : 'a t -> pos =
+  let def_position : 'a t -> pos option =
     fun t ->
     match to_internal_promise t with
     | Internal ({pos ; _ } as t) ->
-       Option.value
-         ~default:(let state = (underlying t).state in
+       Option.fold
+         ~none:(let state = (underlying t).state in
                   match state with
-                  | Pending { user_code; _ } -> pos_of_owee_loc user_code
-                  | _ -> no_position)
+                  | Pending { user_code; _ } -> Some (pos_of_owee_loc user_code)
+                  | _ -> None)
+         ~some:(fun v -> Some v)
          pos
 
   type packed = P : _ t -> packed
