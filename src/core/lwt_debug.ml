@@ -380,54 +380,21 @@ type storage = (unit -> unit) Storage_map.t
 
 type pos = string*int*int*int   (* fname,line,bol,cnum *)
 
-module WeakSet = struct
-  type 'a t = { mutable table : 'a Weak.t }
+module Weak_ptr = struct
 
-  let empty () = { table = Weak.create 0 }
+  type 'a t = 'a Weak.t
 
+  let alloc () = Weak.create 1
 
-  let create vl =
-    let len = List.length vl in
-    let table = Weak.create len in
-    List.iteri
-      (fun i v -> Weak.set table i (Some v))
-      vl;
-    { table }
+  let set cell v = Weak.set cell 0 (Some v)
 
-  let singleton v =
-    let table = Weak.create 1 in
-    Weak.set table 0 (Some v);
-    { table }
-
-  let add s v =
-    (* TODO, ensure to add only once ? *)
-    let length = Weak.length s.table in
-    let table = Weak.create (length+1)  in
-    Weak.blit s.table 0 table 0 length;
-    Weak.set table length (Some v);
-    s.table <- table
-  [@@ocaml.warning "-32"]
-
-  let comp_last s cmp v =
-    Option.fold ~none:false ~some:(fun v' -> cmp v v') (Weak.get s.table (Weak.length s.table -1))
-
-  let iteri f s =
-    for i=0 to  Weak.length s.table -1  do
-      f i (Weak.get s.table i)
-    done
-  [@@ocaml.warning "-32"]
+  let get cell = Weak.get cell 0
 
 
-  let to_list s =
-    let rec loop i length res =
-      if i = length then
-        res
-      else loop (i+1)length
-             (match Weak.get s.table i with
-                Some v -> v ::res
-              | None -> res)
-    in
-    loop 0 (Weak.length s.table) []
+  let create v =
+    let cell = alloc () in
+    set cell v;
+    cell
 end
 
 module Main_internal_types =
@@ -451,16 +418,18 @@ struct
   (* Promises proper. *)
   type ('a, 'u, 'c) promise = {
       pos :  pos option;
-      mutable parents :  internal_packed WeakSet.t;
+      parents : packed_promise_ptr_array;
       mutable state : ('a, 'u, 'c) state;
   }
-  and internal_packed = IP : _ promise -> internal_packed
   and (_, _, _) state =
     | Fulfilled : 'a                  -> ('a, underlying, resolved) state
     | Rejected  : exn                 -> ( _, underlying, resolved) state
     | Pending   : 'a callbacks        -> ('a, underlying, pending)  state
     | Proxy     : ('a, _, 'c) promise -> ('a, proxy,      'c)       state
-
+  and packed_promise_ptr =
+    Pack_ptr :  ('a,'b,'c) promise Weak_ptr.t -> packed_promise_ptr
+                                                   [@@ocaml.boxed]
+  and packed_promise_ptr_array ={mutable table:  packed_promise_ptr Array.t}
   (* Note:
 
      A promise whose state is [Proxy _] is a "proxy" promise. A promise whose
@@ -793,27 +762,137 @@ open Basic_helpers
 
 (* Helper module for parent-promises sets *)
 
-  module PSet = struct
-    include WeakSet
+module PSet:
+sig
 
-    (* build a week pointer to only one element *)
-    let singleton v =
-      singleton (IP v)
+  type packed = Pack :  ('a,'b,'c) promise -> packed
 
-    (* internal use *)
-    (* one element unlesse it has just been added.
-       We don't scan the whole table but only the last added promise
-       as a common pattern is to add a parent promise then to add it's
-       underlying promise, which is probably very often the same thing
-     *)
-    let add s v =
-      if comp_last s (fun v (IP v') -> identical v (Obj.magic v')) v then
-        add s (IP v)
+  type t = packed_promise_ptr_array
+
+  val empty : unit -> t
+
+  val singleton : ('a,'b,'c) promise -> t
+
+  val add : t -> ('a,'b,'c) promise -> unit
+
+  val iteri : (int -> packed option -> unit) -> t -> unit [@@ocaml.warning "-32"]
+
+  val to_list : t -> packed list
+
+  module Public : sig
+
+    val create : 'a Public_types.t list -> t
+
+    val singleton : 'a Public_types.t -> t [@@ocaml.warning "-32"]
+
+    val add : t -> 'a Public_types.t -> unit [@@ocaml.warning "-32"]
+
   end
 
+end =
+  struct
+
+    type t = packed_promise_ptr_array
+
+    let empty_cell = Pack_ptr (Weak_ptr.alloc ())
+
+    let make_packed v = Pack_ptr (Weak_ptr.create v)
+
+    type packed = Pack :  ('a,'b,'c) promise -> packed
+                                                  [@@boxed]
+
+    let get_packed (Pack_ptr ptr) =
+      match Weak_ptr.get ptr with
+        None -> None
+      | Some inner -> Some (Pack inner)
+
+    let empty () = { table = Array.make 0 empty_cell  }
+
+    let create : type a b c. (a,b,c) promise list -> t =
+      fun  vl ->
+      let len = List.length vl in
+      let table = Array.make len empty_cell in
+      List.iteri
+        (fun i v -> Array.set table i (make_packed v))
+        vl;
+      { table }
+
+    let singleton v = create [v]
+
+    let comp_last s cmp v =
+      let last = Array.length s.table -1 in
+      let get_last =
+        if last < 0 then None else
+          get_packed s.table.(Array.length s.table -1) in
+      Option.fold ~none:false ~some:(fun v' -> cmp v v') get_last
+        [@@ocaml.warning "-32"]
+
+  let add s v =
+    let length = Array.length s.table in
+    (* Most of the time, we add  twice the same promise
+       because we add p and underlying p.
+       So we avoid here duplicate adding.
+     *)
+    let last = Array.length s.table -1 in
+    let get_last =
+      if last < 0 then None else
+        get_packed s.table.(Array.length s.table -1) in
+    if Option.fold
+         ~none:false
+         ~some:(fun (Pack v') ->
+           identical v  (Obj.magic v'))
+         get_last
+    then
+      ()
+        (* don't re-add *)
+    else
+    let table =
+      Array.init
+        (length+1)
+        (fun i -> if i < length then
+                    s.table.(i)
+                  else  make_packed v) in
+    s.table <- table
+                 [@@ocaml.warning "-32"]
 
 
+  let iteri f s =
+    for i=0 to  Array.length s.table -1  do
+      f i (get_packed s.table.(i))
+    done
+  [@@ocaml.warning "-32"]
 
+  (* let () = inspect "empty" (empty ()) *)
+
+  let to_list s =
+    let lst_ptr =
+      Array.to_list s.table in
+    List.filter_map get_packed lst_ptr
+
+  module Public =  struct
+
+      let create : type a. a Public_types.t list -> t =
+        fun  vl ->
+        let len = List.length vl in
+        let table = Array.make len empty_cell in
+        List.iteri
+          (fun i v ->
+            let Internal v = to_internal_promise v in
+            Array.set table i (make_packed v))
+          vl;
+        { table }
+
+      let singleton pub =
+        let Internal p = to_internal_promise pub in
+        singleton p
+
+      let add s pub =
+        let Internal p = to_internal_promise pub in
+        add s p
+
+  end
+
+  end
 
 module Sequence_associated_storage :
 sig
@@ -1625,7 +1704,7 @@ module Pending_promises :
 sig
   (* Internal *)
   val new_pending :
-    parents: internal_packed WeakSet.t ->
+    parents: packed_promise_ptr_array ->
     pos:pos option ->
     ?user_code:Owee_location.t ->
     how_to_cancel:how_to_cancel ->
@@ -2682,12 +2761,7 @@ struct
 
   let join_owee_info = ref None
 
-  let pack_all ps = PSet.create @@
-                      List.map
-                        (fun p ->
-                          let Internal p = to_internal_promise p in
-                          IP p)
-                        ps
+  let pack_all ps = PSet.Public.create ps
 
   let join pos ps =
     let parents = pack_all ps in
@@ -3389,7 +3463,7 @@ struct
 
   (* type public_packed = packed *)
 
-  let to_packed  (IP p) = P (to_public_promise p)
+  let to_packed  (PSet.Pack p) = P (to_public_promise p)
 
   let rec waiters_successors callback_list acc =
     match callback_list with
