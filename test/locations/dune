@@ -2,7 +2,12 @@
  (name test_locations)
  (libraries lwt lwt.unix)
  (preprocess (pps lwt_debug_ppx))
- )
+ (modules test_locations))
+
+(executable
+ (name test_locations_already_ppx)
+ (libraries lwt lwt.unix)
+ (modules test_locations_already_ppx) )
 
 (alias
  (name runtest_location)

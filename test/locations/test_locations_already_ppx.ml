@@ -1,4 +1,18 @@
-(* open PackedWeakSet *)
+[@@@ocaml.ppx.context
+{ tool_name = "ppxlib_driver";
+  include_dirs = [];
+  load_path = [];
+  open_modules = [];
+  for_package = None;
+  debug = false;
+  use_threads = false;
+  use_vmthreads = false;
+  recursive_types = false;
+  principal = false;
+  transparent_modules = false;
+  unboxed_types = false;
+  unsafe_string = false;
+  cookies = [] }]
 
 let section = ref 0
 
@@ -9,10 +23,6 @@ let begin_section () = section := !section + margin
 let end_section () = section := !section - margin
 
 let end_chapter () = Format.printf "@.======================================@."
-
-(* let printf format =
- *   Format.printf "%s" (String.make !section ' ') ;
- *   Format.printf format *)
 
 let printf format =
   Format.ifprintf Format.std_formatter "%s" (String.make !section ' ') ;
@@ -26,58 +36,19 @@ let pp_position_short_option ppf v =
       Format.fprintf ppf "unknown location"
   [@@ocaml.warning "-32"]
 
-(* let inspect_obj descr obj =
- *   let repr = Obj.repr obj in
- *   if not @@ Obj.is_block repr then (
- *     printf "Not an obj at %s@." descr ;
- *     raise (Invalid_argument "inspect_obj") )
- *   else
- *     let size = Obj.size repr in
- *     let tag = Obj.tag repr in
- *     printf "Inspecting %s with size %d tag %d@." descr size tag ;
- *     (repr, size, tag)
- *
- * let rec inspect_promise ?(first = true) id (p : 'a Lwt.t) =
- *   let (repr, size, _tag) = inspect_obj ("promise" ^ id) p in
- *   begin_section () ;
- *   if size = 1 then (
- *     printf "boxed promise@." ;
- *     inspect_promise ~first:false id (Obj.obj (Obj.field repr 0)) )
- *   else if size <> 3 then printf "wrong size@."
- *   else (
- *     if first then printf "unboxed promise" ;
- *     let (pos, _size, _tag) = inspect_obj "pos_0" (Obj.field repr 0) in
- *     printf "pos : %a@." pp_position_short_option (Obj.obj pos) ;
- *     let (parents, _size, _tag) = inspect_obj "parents" (Obj.field repr 1) in
- *     let parents : PackedWeakSet.t = Obj.obj parents in
- *     ignore (inspect_obj "parents" parents) ;
- *     (\* printf "pos : %a@." pp_position_short_option (Obj.obj pos) ; *\)
- *     let (_state, _size, _tag) = inspect_obj "state" (Obj.field repr 2) in
- *     () ) ;
- *   end_section () *)
-
 let print str = Lwt_io.printf "%s" str
 
-(* let rec fonction_bidon x =
- *   let acc = ref 0 in
- *   for i = 1 to x do
- *     acc := !acc + (fonction_bidon i)
- *   done ;
- *   !acc *)
-
-(* let loc = Owee_location.extract fonction_bidon
- *
- * let () = assert (loc <> Owee_location.none) *)
-open Lwt
+open Lwt_debug
 
 let bindings () =
-  Lwt.pause ()
-  (* ******************* *)
-  >>= fun () ->
-  (* ******************* *)
-  Lwt_unix.sleep 2.
-  (* *********************************** *)
-  >>= fun () -> print "titi"
+  ( >>= )
+    ~pos:("test_locations.ml", 74, 2313, 2315)
+    (Lwt_debug.pause ~pos:("test_locations.ml", 76, 2313, 2315) ())
+    (fun () ->
+      ( >>= )
+        ~pos:("test_locations.ml", 78, 2400, 2402)
+        (Lwt_unix.sleep 2.)
+        (fun () -> print "titi"))
 
 module Option = struct
   include Option
@@ -111,7 +82,9 @@ let print_pos prefix pcked_list =
     (Format.pp_print_list
        ~pp_sep:Format.pp_print_space
        pp_position_short_option)
-    (List.map (fun p -> match p with P p -> Lwt.def_position p) pcked_list)
+    (List.map
+       (fun p -> match p with P p -> Lwt_debug.def_position p)
+       pcked_list)
 
 let pp_pos ppf (file, line, bol, col) =
   Format.fprintf ppf "@[<h>%s:%d:%d@]" file line (col - bol)
@@ -139,38 +112,16 @@ let next_known_pos p =
   in
   next_known_pos 0 p
 
-(* let rec next_postionned : type a. a Lwt_debug.t -> Lwt_debug.packed option =
- *  fun p ->
- *   match Lwt_debug.def_position p with
- *   | None -> (
- *     match Lwt_debug.predecessors p with
- *     | [] ->
- *         None
- *     | [P p] ->
- *         next_postionned p
- *     | _ ->
- *         None )
- *   | Some _ ->
- *       Some (P p) *)
-
 let parents : 'a Lwt_debug.t -> Lwt_debug.packed list =
  fun p ->
-  (* let open Lwt_debug in
-   * Option.fold
-   *   ~none:[]
-   *   ~some:( function *)
-  (* | Lwt_debug.(P p -> *)
   printf "getting parents@." ;
   let pred = Lwt_debug.predecessors p in
   printf "got %d parents@." (List.length pred) ;
   pred
 
-(* )
-     * (next_postionned p) *)
+let stop = "\203\167"
 
-let stop = "˧"
-
-let branch = "˫"
+let branch = "\203\171"
 
 let pp_sep ppf () = Format.fprintf ppf "@ %s" branch
 
@@ -178,7 +129,7 @@ let pp_status ppf p =
   Format.fprintf
     ppf
     "%s"
-    ( match Lwt.state p with
+    ( match Lwt_debug.state p with
     | Lwt_debug.Return _ ->
         "fulfilled"
     | Lwt_debug.Fail _ ->
@@ -187,10 +138,8 @@ let pp_status ppf p =
         "sleep" )
 
 let pp_parents_tree =
-  (* let visited = Hashtbl.create 10 in *)
   let rec pp_parents_tree : type a. 'b -> a Lwt_debug.t -> unit =
    fun ppf promise ->
-    (* inspect_promise "" promise ; *)
     let pp_parents ppf ps =
       match ps with
       | [] ->
@@ -208,10 +157,6 @@ let pp_parents_tree =
                 ps)
             ps
     in
-    (* if Hashtbl.mem visited (Lwt_debug.P promise) then printf "loop@."
-     * else (
-     *   printf "new guy @." ;
-     *   Hashtbl.add visited (Lwt_debug.P promise) () ; *)
     begin_section () ;
     Format.fprintf
       ppf
@@ -229,12 +174,8 @@ let pp_parents_tree =
       pp_parents
       (parents promise) ;
     end_section ()
-   (* ) *)
   in
   pp_parents_tree
-
-(* let pp_parents_tree : type a. 'b -> a Lwt_debug.t -> unit =
- *  fun ppf promise -> Format.fprintf ppf "@[<v 2>%a@]@." pp_parents_tree promise *)
 
 let print_tree s p =
   begin_section () ;
@@ -246,20 +187,19 @@ let _ =
   Lwt_main.run
   @@
   let p = bindings () in
-  let p1 = Lwt.bind p bindings in
+  let p1 =
+    Lwt_debug.bind ~pos:("test_locations.ml", 249, 6779, 6790) p bindings
+  in
   let p2 =
-    bindings () (* *********************************** *)
-    >>= (* *********************************** *)
-        bindings
+    ( >>= ) ~pos:("test_locations.ml", 251, 6824, 6828) (bindings ()) bindings
   in
   let p3 =
-    p1 (* *********************************** *)
-    >>= (* *********************************** *)
-    fun () -> p2
+    ( >>= ) ~pos:("test_locations.ml", 256, 6965, 6969) p1 (fun () -> p2)
   in
-  let p4 = p >>= bindings in
-  let p_join = Lwt.join [p1; p2; p3] in
-  (* inspect_promise "p" p ; *)
+  let p4 = ( >>= ) ~pos:("test_locations.ml", 260, 7086, 7097) p bindings in
+  let p_join =
+    Lwt_debug.join ~pos:("test_locations.ml", 261, 7115, 7130) [p1; p2; p3]
+  in
   print_tree "p" p ;
   print_tree "p1" p1 ;
   print_tree "p1" p1 ;
@@ -267,26 +207,10 @@ let _ =
   print_tree "p3" p3 ;
   print_tree "p4" p4 ;
   print_tree "p_join" p_join ;
-  (* let parents_1 = Lwt.predecessors p1 in
-   * let parents_2 = Lwt.predecessors p2 in
-   * let parents_3 = Lwt.predecessors p3 in
-   * let parents_join = Lwt.predecessors p_join in
-   * let successors = Lwt.successors p1 in
-   * print_pos "par_1" parents_1 ;
-   * print_pos "par_2" parents_2 ;
-   * print_pos "par_3" parents_3 ;
-   * print_pos "par_join" parents_join ;
-   * print_pos "succ" successors ; *)
-  p1
-  >>= fun () ->
-  print_endline "" ;
-  print_tree "p1" p1 ;
-  print_tree "p2" p2 ;
-  print_tree "p3" p3 ;
-  print_tree "p_join" p_join ;
-  (* print_pos "par_1" parents_1 ;
-   * print_pos "par_2" parents_2 ;
-   * print_pos "par_3" parents_3 ;
-   * print_pos "par_join" parents_join ;
-   * print_pos "succ" successors ; *)
-  p3
+  ( >>= ) ~pos:("test_locations.ml", 280, 7764, 7766) p1 (fun () ->
+      print_endline "" ;
+      print_tree "p1" p1 ;
+      print_tree "p2" p2 ;
+      print_tree "p3" p3 ;
+      print_tree "p_join" p_join ;
+      p3)
