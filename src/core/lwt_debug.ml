@@ -378,7 +378,7 @@ module Storage_map =
 type storage = (unit -> unit) Storage_map.t
 
 
-type pos = string*int*int*int   (* fname,line,bol,cnum *)
+type pos = string*(int*int)*(int*int)   (* fname,(line,col),(line_end,col_end) *)
 
 module Weak_ptr = struct
 
@@ -3439,12 +3439,12 @@ struct
       | Rejected _ -> Owee_location.none
       | Pending { user_code; _ } -> user_code
 
-  let no_position : pos = ("not_found",0,0,0)
+  let no_position : pos = ("not_found",(0,0),(0,0))
   let pos_of_owee_loc t =
     Option.value ~default:no_position
     @@
       Option.map
-        (fun (fname, line,col) -> (fname, line, 0, col))
+        (fun (fname, line,col) -> (fname, (line, col), (line, col)))
         (Owee_location.lookup t)
 
   let def_position : 'a t -> pos option =

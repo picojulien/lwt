@@ -3,9 +3,8 @@ open Common
 
 let pos_of_location (loc : location) =
   ( loc.loc_start.pos_fname,
-    loc.loc_start.pos_lnum,
-    loc.loc_start.pos_bol,
-    loc.loc_start.pos_cnum )
+    (loc.loc_start.pos_lnum, loc.loc_start.pos_bol, loc.loc_start.pos_cnum),
+    (loc.loc_end.pos_lnum, loc.loc_end.pos_bol, loc.loc_end.pos_cnum) )
 
 let exp_of_string ~loc str =
   { pexp_desc = Pexp_constant (Pconst_string (str, None));
@@ -19,13 +18,19 @@ let exp_of_int ~loc i =
     pexp_attributes = [];
     pexp_loc_stack = [] }
 
-let exp_of_position ~loc (fname, line, bol, col) =
+let make_tuple loc ls =
+  { pexp_desc = Pexp_tuple ls;
+    pexp_loc = loc;
+    pexp_attributes = [];
+    pexp_loc_stack = [] }
+
+let exp_of_position ~loc (fname, (line, bol, col), (eline, ebol, ecol)) =
   { pexp_desc =
       Pexp_tuple
         [ exp_of_string ~loc (Filename.basename fname);
-          exp_of_int ~loc line;
-          exp_of_int ~loc bol;
-          exp_of_int ~loc col ];
+          make_tuple loc [exp_of_int ~loc line; exp_of_int ~loc (col - bol)];
+          make_tuple loc [exp_of_int ~loc eline; exp_of_int ~loc (ecol - ebol)]
+        ];
     pexp_loc = loc;
     pexp_attributes = [];
     pexp_loc_stack = [] }

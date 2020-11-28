@@ -1,4 +1,4 @@
-(* open PackedWeakSet *)
+open Lwt
 
 let section = ref 0
 
@@ -18,13 +18,34 @@ let printf format =
   Format.ifprintf Format.std_formatter "%s" (String.make !section ' ') ;
   Format.ifprintf Format.std_formatter format
 
-let pp_position_short_option ppf v =
+let pp_position ppf (file, (line, col), (eline, ecol)) =
+  Format.fprintf ppf "%s:%d:%d-%d:%d" file line col eline ecol
+
+let pp_position_option ppf v =
   match v with
-  | Some (file, line, bol, col) ->
-      Format.fprintf ppf "%s:%d:%d" file line (col - bol)
+  | Some pos ->
+      pp_position ppf pos
   | None ->
       Format.fprintf ppf "unknown location"
   [@@ocaml.warning "-32"]
+
+let print_pos prefix pcked_list =
+  Format.printf
+    "%s: @[%a@]@."
+    prefix
+    (Format.pp_print_list ~pp_sep:Format.pp_print_space pp_position_option)
+    (List.map (fun p -> match p with P p -> Lwt.def_position p) pcked_list)
+
+module Option = struct
+  include Option
+
+  let pp ?(default = "None") pp ppf optv =
+    match optv with
+    | None ->
+        Format.fprintf ppf "%s" default
+    | Some v ->
+        Format.fprintf ppf "%a" pp v
+end
 
 (* let inspect_obj descr obj =
  *   let repr = Obj.repr obj in
@@ -68,7 +89,6 @@ let print str = Lwt_io.printf "%s" str
 (* let loc = Owee_location.extract fonction_bidon
  *
  * let () = assert (loc <> Owee_location.none) *)
-open Lwt
 
 let bindings () =
   Lwt.pause ()
@@ -78,43 +98,6 @@ let bindings () =
   Lwt_unix.sleep 2.
   (* *********************************** *)
   >>= fun () -> print "titi"
-
-module Option = struct
-  include Option
-
-  let pp ?(default = "None") pp ppf optv =
-    match optv with
-    | None ->
-        Format.fprintf ppf "%s" default
-    | Some v ->
-        Format.fprintf ppf "%a" pp v
-end
-
-let pp_position ppf (file, line, bol, col) =
-  Format.fprintf ppf "file %s, line %d, col %d" file line (col - bol)
-  [@@ocaml.warning "-32"]
-
-let pp_position_short ppf (file, line, bol, col) =
-  Format.fprintf ppf "%s:%d:%d" file line (col - bol)
-
-let pp_position_short_option ppf v =
-  match v with
-  | Some (file, line, bol, col) ->
-      Format.fprintf ppf "%s:%d:%d" file line (col - bol)
-  | None ->
-      Format.fprintf ppf "unknown location"
-
-let print_pos prefix pcked_list =
-  Format.printf
-    "%s: @[%a@]@."
-    prefix
-    (Format.pp_print_list
-       ~pp_sep:Format.pp_print_space
-       pp_position_short_option)
-    (List.map (fun p -> match p with P p -> Lwt.def_position p) pcked_list)
-
-let pp_pos ppf (file, line, bol, col) =
-  Format.fprintf ppf "@[<h>%s:%d:%d@]" file line (col - bol)
 
 let next_known_pos p =
   let visited = Hashtbl.create 10 in
@@ -155,18 +138,10 @@ let next_known_pos p =
 
 let parents : 'a Lwt_debug.t -> Lwt_debug.packed list =
  fun p ->
-  (* let open Lwt_debug in
-   * Option.fold
-   *   ~none:[]
-   *   ~some:( function *)
-  (* | Lwt_debug.(P p -> *)
   printf "getting parents@." ;
   let pred = Lwt_debug.predecessors p in
   printf "got %d parents@." (List.length pred) ;
   pred
-
-(* )
-     * (next_postionned p) *)
 
 let stop = "˧"
 
@@ -222,7 +197,7 @@ let pp_parents_tree =
         | None ->
             Format.fprintf ppf "%s" path
         | Some v ->
-            Format.fprintf ppf "%s %a" path pp_pos v)
+            Format.fprintf ppf "%s %a" path pp_position v)
       (next_known_pos promise)
       pp_status
       promise

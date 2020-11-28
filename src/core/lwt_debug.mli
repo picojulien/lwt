@@ -395,7 +395,7 @@ type -'a u
     be passed to {!Lwt.wakeup_later}, {!Lwt.wakeup_later_exn}, or
     {!Lwt.wakeup_later_result} to resolve that promise. *)
 
-type pos = string*int*int*int
+type pos = string*(int*int)*(int*int)
 
   val wait : ?pos:pos -> unit -> ('a t * 'a u)
 (** Creates a new pending {{: #TYPEt} promise}, paired with its {{: #TYPEu}

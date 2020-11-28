@@ -12,8 +12,7 @@
 
 type (+'a, +'b) t = ('a, 'b) Result.result Lwt.t
 
-
-type pos = string*int*int*int
+type pos = Lwt_debug.pos
 
 val return : ?pos:pos -> 'a -> ('a, _) t
 

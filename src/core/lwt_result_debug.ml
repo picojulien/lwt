@@ -9,7 +9,7 @@ open Result
 
 type (+'a, +'b) t = ('a, 'b) Result.result Lwt.t
 
-type pos = string*int*int*int
+type pos = Lwt_debug.pos
 
 let return ?pos x = Lwt.return ?pos  (Ok x)
 let fail ?pos  e = Lwt.return ?pos (Error e)
