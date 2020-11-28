@@ -3426,8 +3426,19 @@ struct
 end
 include Lwt_result_type
 
-module Lwt_owee_tracing =
+
+module Lwt_tracing =
 struct
+
+  let pp_position ppf ((file, (line, col), (eline, ecol)):pos) =
+    Format.fprintf ppf "%s:%d:%d-%d:%d" file line col eline ecol
+
+  let pp_position_option ppf v =
+    match v with
+    | Some pos ->
+       pp_position ppf pos
+    | None ->
+       Format.fprintf ppf "unknown location"
 
   let user_location : 'a t -> Owee_location.t =
     fun t ->
@@ -3494,5 +3505,123 @@ struct
     | Internal {parents ;_ } ->
        List.map to_packed (PSet.to_list parents)
 
+  let stop = "˧"
+
+  let branch = "˫"
+
+  let pp_sep ~human ppf () =
+    if human then
+      Format.fprintf ppf "@ %s" branch
+    else
+      Format.fprintf ppf " "
+
+  let pp_status ppf p =
+    Format.fprintf
+      ppf
+      "%s"
+      ( match state p with
+        | Return _ ->
+           "fulfilled"
+        | Fail _ ->
+           "failed"
+        | Sleep ->
+           "sleep" )
+
+  module PackedSet  =struct
+
+    type t = packed list ref
+
+    let create _size : t = ref []
+    let mem s p =  List.memq p !s
+
+    let add s p = s:=(p::!s)
+  end
+
+  let next_known_pos : type a. a t -> int * pos option =
+    fun  p ->
+    let visited = PackedSet.create 10 in
+    let rec next_known_pos :
+              type a. int -> a t -> int * pos option =
+      fun len p ->
+      if PackedSet.mem visited (P p) then (len, None)
+      else (
+        PackedSet.add visited (P p) ;
+        match def_position p with
+        | None -> (
+          match predecessors p with
+          | [] ->
+             (len, None)
+          | [P p] ->
+             next_known_pos (len + 1) p
+          | _ ->
+             (len, None) )
+        | Some _ as res ->
+           (len, res) )
+    in
+    next_known_pos 0 p
+
+  let pp_dependencies_tree ~(human:bool) =
+    let visited = PackedSet.create 10 in
+    let opn = (if human then "" else "(") in
+    let close=(if human then "" else ")") in
+    let rec pp_parents_tree : type a. 'b -> a Public_types.t -> unit =
+      fun ppf promise ->
+      let pp_parents ppf ps =
+        match ps with
+        | [] ->
+           Format.fprintf ppf "%s" (if human then stop else "()")
+        | _ ->
+           if human then Format.fprintf ppf "@,|@,%s" branch ;
+           Format.fprintf
+             ppf
+             "%s%a%s"
+             opn
+             (fun ppf ps ->
+               Format.pp_print_list
+                 ~pp_sep:(pp_sep ~human)
+                 (fun ppf (P p) -> pp_parents_tree ppf p)
+                 ppf
+                 ps)
+             ps
+             close
+      in
+      let pp_promise : type a. Format.formatter -> a Public_types.t ->
+                            unit=
+        fun ppf p ->
+        Format.fprintf ppf "@[<h>%a(stat:%a)@]"
+          (fun ppf (len, v) ->
+            let path = String.make len '.' in
+            match v with
+            | None ->
+               Format.fprintf ppf "%s" path
+            | Some v ->
+               Format.fprintf ppf "%s %a" path pp_position v)
+          (next_known_pos p)
+          pp_status
+          promise
+      in
+      if PackedSet.mem visited (P promise) then
+        Format.fprintf
+          ppf
+          "@[%s%a(stopping parent examination to avoid cycles)%s@]"
+          opn
+          pp_promise
+          promise
+          close
+      else (
+        PackedSet.add visited (P promise) ;
+        Format.fprintf
+          ppf
+          "@[<v 2>%s%a %a%s@]"
+          opn
+          pp_promise
+          promise
+          pp_parents
+          (predecessors promise)
+          close
+      )
+    in
+    pp_parents_tree
+
 end
-include Lwt_owee_tracing
+include Lwt_tracing

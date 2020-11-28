@@ -18,17 +18,6 @@ let printf format =
   Format.ifprintf Format.std_formatter "%s" (String.make !section ' ') ;
   Format.ifprintf Format.std_formatter format
 
-let pp_position ppf (file, (line, col), (eline, ecol)) =
-  Format.fprintf ppf "%s:%d:%d-%d:%d" file line col eline ecol
-
-let pp_position_option ppf v =
-  match v with
-  | Some pos ->
-      pp_position ppf pos
-  | None ->
-      Format.fprintf ppf "unknown location"
-  [@@ocaml.warning "-32"]
-
 let print_pos prefix pcked_list =
   Format.printf
     "%s: @[%a@]@."
@@ -99,29 +88,6 @@ let bindings () =
   (* *********************************** *)
   >>= fun () -> print "titi"
 
-let next_known_pos p =
-  let visited = Hashtbl.create 10 in
-  let rec next_known_pos :
-      type a. int -> a Lwt_debug.t -> int * Lwt_debug.pos option =
-   fun len p ->
-    printf "next_known_pos: iter %d@." len ;
-    if Hashtbl.mem visited (Lwt_debug.P p) then (len, None)
-    else (
-      Hashtbl.add visited (Lwt_debug.P p) () ;
-      match Lwt_debug.def_position p with
-      | None -> (
-        match Lwt_debug.predecessors p with
-        | [] ->
-            (len, None)
-        | [P p] ->
-            next_known_pos (len + 1) p
-        | _ ->
-            (len, None) )
-      | Some _ as res ->
-          (len, res) )
-  in
-  next_known_pos 0 p
-
 (* let rec next_postionned : type a. a Lwt_debug.t -> Lwt_debug.packed option =
  *  fun p ->
  *   match Lwt_debug.def_position p with
@@ -143,77 +109,16 @@ let parents : 'a Lwt_debug.t -> Lwt_debug.packed list =
   printf "got %d parents@." (List.length pred) ;
   pred
 
-let stop = "˧"
-
-let branch = "˫"
-
-let pp_sep ppf () = Format.fprintf ppf "@ %s" branch
-
-let pp_status ppf p =
-  Format.fprintf
-    ppf
-    "%s"
-    ( match Lwt.state p with
-    | Lwt_debug.Return _ ->
-        "fulfilled"
-    | Lwt_debug.Fail _ ->
-        "failed"
-    | Lwt_debug.Sleep ->
-        "sleep" )
-
-let pp_parents_tree =
-  (* let visited = Hashtbl.create 10 in *)
-  let rec pp_parents_tree : type a. 'b -> a Lwt_debug.t -> unit =
-   fun ppf promise ->
-    (* inspect_promise "" promise ; *)
-    let pp_parents ppf ps =
-      match ps with
-      | [] ->
-          Format.fprintf ppf "%s" stop
-      | _ ->
-          Format.fprintf ppf "@,|@,%s" branch ;
-          Format.fprintf
-            ppf
-            "%a"
-            (fun ppf ps ->
-              Format.pp_print_list
-                ~pp_sep
-                (fun ppf (P p) -> pp_parents_tree ppf p)
-                ppf
-                ps)
-            ps
-    in
-    (* if Hashtbl.mem visited (Lwt_debug.P promise) then printf "loop@."
-     * else (
-     *   printf "new guy @." ;
-     *   Hashtbl.add visited (Lwt_debug.P promise) () ; *)
-    begin_section () ;
-    Format.fprintf
-      ppf
-      "@[<v 2>%a(stat:%a) %a@]"
-      (fun ppf (len, v) ->
-        let path = String.make len '.' in
-        match v with
-        | None ->
-            Format.fprintf ppf "%s" path
-        | Some v ->
-            Format.fprintf ppf "%s %a" path pp_position v)
-      (next_known_pos promise)
-      pp_status
-      promise
-      pp_parents
-      (parents promise) ;
-    end_section ()
-   (* ) *)
-  in
-  pp_parents_tree
-
 (* let pp_parents_tree : type a. 'b -> a Lwt_debug.t -> unit =
  *  fun ppf promise -> Format.fprintf ppf "@[<v 2>%a@]@." pp_parents_tree promise *)
 
 let print_tree s p =
   begin_section () ;
-  Format.printf "@[<v 2>tree for %s @ @[%a@]@]@." s pp_parents_tree p ;
+  Format.printf
+    "@[<v 2>tree for %s @, @[%a@]@]@."
+    s
+    (pp_dependencies_tree ~human:true)
+    p ;
   end_section () ;
   end_chapter ()
 
