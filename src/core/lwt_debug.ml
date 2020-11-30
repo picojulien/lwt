@@ -3527,7 +3527,7 @@ struct
         | Sleep ->
            "sleep" )
 
-  module PackedSet  =struct
+  module PackedSet = struct
 
     type t = packed list ref
 
@@ -3621,7 +3621,14 @@ struct
           close
       )
     in
-    pp_parents_tree
+    fun ppf p ->
+    try
+      pp_parents_tree ppf p
+    with
+      exn -> Format.eprintf
+               "@.Error while printing dependencies :%s@.Backtrace: %s@."
+               (Printexc.to_string  exn)
+               (Printexc.get_backtrace())
 
 end
 include Lwt_tracing
